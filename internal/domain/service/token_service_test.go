@@ -8,14 +8,17 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 )
 
-func setupTokenService(accessTTL, refreshTTL time.Duration) *TokenService {
+func setupTokenService(t *testing.T, accessTTL, refreshTTL time.Duration) *TokenService {
+	t.Helper()
 	return NewTokenService("access-secret-key", "refresh-secret-key", accessTTL, refreshTTL)
 }
 
 func TestGenerateTokenPair_ReturnsValidJWT(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t, 15*time.Minute, 7*24*time.Hour)
 
 	td, err := svc.GenerateTokenPair(1, "test@example.com")
 
@@ -36,7 +39,7 @@ func TestGenerateTokenPair_ReturnsValidJWT(t *testing.T) {
 }
 
 func TestGenerateTokenPair_ReturnsValidRefreshJWT(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t, 15*time.Minute, 7*24*time.Hour)
 
 	td, err := svc.GenerateTokenPair(1, "test@example.com")
 
@@ -56,7 +59,7 @@ func TestGenerateTokenPair_ReturnsValidRefreshJWT(t *testing.T) {
 }
 
 func TestGenerateTokenPair_ReturnsAllFields(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t, 15*time.Minute, 7*24*time.Hour)
 
 	td, err := svc.GenerateTokenPair(1, "test@example.com")
 
@@ -70,7 +73,7 @@ func TestGenerateTokenPair_ReturnsAllFields(t *testing.T) {
 }
 
 func TestValidateRefreshToken_ValidToken_ReturnsUserIDAndUUID(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
 
 	td, err := svc.GenerateTokenPair(42, "user@test.com")
 	require.NoError(t, err)
@@ -83,39 +86,46 @@ func TestValidateRefreshToken_ValidToken_ReturnsUserIDAndUUID(t *testing.T) {
 }
 
 func TestValidateRefreshToken_ExpiredToken_ReturnsError(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 1*time.Millisecond)
+	svc := setupTokenService(t,15*time.Minute, -1*time.Second)
 
 	td, err := svc.GenerateTokenPair(1, "test@example.com")
 	require.NoError(t, err)
 
-	time.Sleep(10 * time.Millisecond)
-
 	_, _, err = svc.ValidateRefreshToken(td.RefreshToken)
 
-	assert.Error(t, err)
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "INVALID_REFRESH_TOKEN", domainErr.Code)
 }
 
 func TestValidateRefreshToken_AccessToken_ReturnsError(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
 
 	td, err := svc.GenerateTokenPair(1, "test@example.com")
 	require.NoError(t, err)
 
 	_, _, err = svc.ValidateRefreshToken(td.AccessToken)
 
-	assert.Error(t, err)
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "INVALID_REFRESH_TOKEN", domainErr.Code)
 }
 
 func TestValidateRefreshToken_MalformedToken_ReturnsError(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
 
 	_, _, err := svc.ValidateRefreshToken("not-a-valid-token")
 
-	assert.Error(t, err)
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "INVALID_REFRESH_TOKEN", domainErr.Code)
 }
 
 func TestExtractAccessUUID_ValidToken_ReturnsUUID(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
 
 	td, err := svc.GenerateTokenPair(1, "test@example.com")
 	require.NoError(t, err)
@@ -127,15 +137,15 @@ func TestExtractAccessUUID_ValidToken_ReturnsUUID(t *testing.T) {
 }
 
 func TestExtractAccessUUID_MalformedToken_ReturnsError(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
 
 	_, err := svc.ExtractAccessUUID("not.a.valid.jwt")
 
 	assert.Error(t, err)
 }
 
-func TestExtractAccessUUID_StandardBase64String_ReturnsError(t *testing.T) {
-	svc := setupTokenService(15*time.Minute, 7*24*time.Hour)
+func TestExtractAccessUUID_RandomString_ReturnsError(t *testing.T) {
+	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
 
 	_, err := svc.ExtractAccessUUID(strings.Repeat("a", 50))
 

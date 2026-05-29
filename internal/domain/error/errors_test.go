@@ -1,6 +1,7 @@
 package apperror
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,6 +17,14 @@ func TestDomainError_Error_ReturnsMessage(t *testing.T) {
 	assert.Equal(t, "something went wrong", result)
 }
 
+func TestDomainError_Error_EmptyMessage(t *testing.T) {
+	err := &DomainError{
+		Message: "",
+	}
+
+	assert.Equal(t, "", err.Error())
+}
+
 func TestDomainError_Unwrap_ReturnsWrappedError(t *testing.T) {
 	original := ErrNotFound
 	err := &DomainError{
@@ -28,6 +37,13 @@ func TestDomainError_Unwrap_ReturnsWrappedError(t *testing.T) {
 	assert.Equal(t, original, unwrapped)
 }
 
+func TestDomainError_Unwrap_WorksErrorsIs(t *testing.T) {
+	err := NewDomainError(ErrNotFound, "NOT_FOUND", "resource not found")
+
+	assert.True(t, errors.Is(err, ErrNotFound))
+	assert.True(t, errors.Is(err, ErrNotFound))
+}
+
 func TestNewDomainError_CreatesWithCorrectFields(t *testing.T) {
 	original := ErrValidation
 	err := NewDomainError(original, "VALIDATION_FAILED", "validation failed")
@@ -37,15 +53,15 @@ func TestNewDomainError_CreatesWithCorrectFields(t *testing.T) {
 	assert.Equal(t, "validation failed", err.Message)
 }
 
-func TestSentinelErrors_AreNotNil(t *testing.T) {
-	assert.NotNil(t, ErrNotFound)
-	assert.NotNil(t, ErrDuplicateEmail)
-	assert.NotNil(t, ErrInvalidCredentials)
-	assert.NotNil(t, ErrTokenExpired)
-	assert.NotNil(t, ErrTokenRevoked)
-	assert.NotNil(t, ErrTokenInvalid)
-	assert.NotNil(t, ErrInternalServer)
-	assert.NotNil(t, ErrUnauthorized)
-	assert.NotNil(t, ErrForbidden)
-	assert.NotNil(t, ErrValidation)
+func TestSentinelErrors_HaveExpectedMessages(t *testing.T) {
+	assert.Equal(t, "resource not found", ErrNotFound.Error())
+	assert.Equal(t, "email already exists", ErrDuplicateEmail.Error())
+	assert.Equal(t, "invalid email or password", ErrInvalidCredentials.Error())
+	assert.Equal(t, "token has expired", ErrTokenExpired.Error())
+	assert.Equal(t, "token has been revoked", ErrTokenRevoked.Error())
+	assert.Equal(t, "token is invalid", ErrTokenInvalid.Error())
+	assert.Equal(t, "internal server error", ErrInternalServer.Error())
+	assert.Equal(t, "unauthorized", ErrUnauthorized.Error())
+	assert.Equal(t, "forbidden", ErrForbidden.Error())
+	assert.Equal(t, "validation failed", ErrValidation.Error())
 }
