@@ -4,11 +4,13 @@ type RegisterRequest struct {
 	Email    string `json:"email" validate:"required,email"`
 	Password string `json:"password" validate:"required,min=8"`
 	Name     string `json:"name" validate:"required,min=2,max=100"`
+	WhatsApp string `json:"whatsapp" validate:"required,numeric"`
+	Role     string `json:"role" validate:"required,oneof=customer provider"`
 }
 
 type LoginRequest struct {
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required"`
+	Identifier string `json:"identifier" validate:"required"`
+	Password   string `json:"password" validate:"required"`
 }
 
 type LogoutRequest struct {
@@ -27,9 +29,11 @@ type AuthResponse struct {
 }
 
 type UserResponse struct {
-	ID    uint   `json:"id"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
+	ID       uint   `json:"id"`
+	Email    string `json:"email"`
+	Name     string `json:"name"`
+	WhatsApp string `json:"whatsapp"`
+	Role     string `json:"role"`
 }
 
 type MessageResponse struct {

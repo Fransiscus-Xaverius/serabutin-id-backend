@@ -46,6 +46,14 @@ func (m *MockUserRepository) ExistsByEmail(ctx context.Context, email string) (b
 	return args.Bool(0), args.Error(1)
 }
 
+func (m *MockUserRepository) FindByWhatsApp(ctx context.Context, whatsapp string) (*entity.User, error) {
+	args := m.Called(ctx, whatsapp)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*entity.User), args.Error(1)
+}
+
 type MockTokenRepository struct {
 	mock.Mock
 }
@@ -85,16 +93,41 @@ func (m *MockTokenRepository) StoreTokenPair(ctx context.Context, td *entity.Tok
 	return args.Error(0)
 }
 
-func setupAuthUsecase(t *testing.T) (*AuthUsecase, *MockUserRepository, *MockTokenRepository, *service.TokenService) {
+type MockLoginLimiter struct {
+	mock.Mock
+}
+
+func (m *MockLoginLimiter) IsLocked(ctx context.Context, identifier string) (bool, error) {
+	args := m.Called(ctx, identifier)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *MockLoginLimiter) RecordFailure(ctx context.Context, identifier string) error {
+	args := m.Called(ctx, identifier)
+	return args.Error(0)
+}
+
+func (m *MockLoginLimiter) Reset(ctx context.Context, identifier string) error {
+	args := m.Called(ctx, identifier)
+	return args.Error(0)
+}
+
+func (m *MockLoginLimiter) RemainingAttempts(ctx context.Context, identifier string) (int, error) {
+	args := m.Called(ctx, identifier)
+	return args.Int(0), args.Error(1)
+}
+
+func setupAuthUsecase(t *testing.T) (*AuthUsecase, *MockUserRepository, *MockTokenRepository, *MockLoginLimiter, *service.TokenService) {
 	t.Helper()
 
 	mockUserRepo := new(MockUserRepository)
 	mockTokenRepo := new(MockTokenRepository)
+	mockLimiter := new(MockLoginLimiter)
 	tokenSvc := service.NewTokenService("test-access-secret", "test-refresh-secret", 15*time.Minute, 7*24*time.Hour)
 
-	uc := NewAuthUsecase(mockUserRepo, mockTokenRepo, tokenSvc, bcrypt.MinCost)
+	uc := NewAuthUsecase(mockUserRepo, mockTokenRepo, tokenSvc, mockLimiter, bcrypt.MinCost)
 
-	return uc, mockUserRepo, mockTokenRepo, tokenSvc
+	return uc, mockUserRepo, mockTokenRepo, mockLimiter, tokenSvc
 }
 
 func hashPassword(t *testing.T, password string) string {
@@ -107,12 +140,13 @@ func hashPassword(t *testing.T, password string) string {
 func TestAuthUsecase_Register_Success(t *testing.T) {
 	t.Parallel()
 
-	uc, mockUserRepo, mockTokenRepo, _ := setupAuthUsecase(t)
+	uc, mockUserRepo, mockTokenRepo, mockLimiter, _ := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	mockUserRepo.On("ExistsByEmail", ctx, "test@example.com").Return(false, nil)
+	mockUserRepo.On("FindByWhatsApp", ctx, "081234567890").Return((*entity.User)(nil), apperror.ErrNotFound)
 	mockUserRepo.On("Create", ctx, mock.MatchedBy(func(u *entity.User) bool {
-		return u.Email == "test@example.com" && u.Name == "Test User"
+		return u.Email == "test@example.com" && u.Name == "Test User" && u.WhatsApp == "081234567890" && u.Role == "customer" && u.ConsentAt != nil
 	})).Run(func(args mock.Arguments) {
 		u := args.Get(1).(*entity.User)
 		u.ID = 1
@@ -121,7 +155,7 @@ func TestAuthUsecase_Register_Success(t *testing.T) {
 		return td.AccessToken != "" && td.RefreshToken != ""
 	}), uint(1)).Return(nil)
 
-	td, user, err := uc.Register(ctx, "test@example.com", "password123", "Test User")
+	td, user, err := uc.Register(ctx, "test@example.com", "password123", "Test User", "081234567890", "customer")
 
 	require.NoError(t, err)
 	require.NotNil(t, td)
@@ -133,20 +167,23 @@ func TestAuthUsecase_Register_Success(t *testing.T) {
 	assert.Equal(t, uint(1), user.ID)
 	assert.Equal(t, "test@example.com", user.Email)
 	assert.Equal(t, "Test User", user.Name)
+	assert.Equal(t, "081234567890", user.WhatsApp)
+	assert.Equal(t, "customer", user.Role)
 
 	mockUserRepo.AssertExpectations(t)
 	mockTokenRepo.AssertExpectations(t)
+	mockLimiter.AssertExpectations(t)
 }
 
 func TestAuthUsecase_Register_DuplicateEmail_ReturnsErrDuplicateEmail(t *testing.T) {
 	t.Parallel()
 
-	uc, mockUserRepo, mockTokenRepo, _ := setupAuthUsecase(t)
+	uc, mockUserRepo, mockTokenRepo, mockLimiter, _ := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	mockUserRepo.On("ExistsByEmail", ctx, "test@example.com").Return(true, nil)
 
-	td, user, err := uc.Register(ctx, "test@example.com", "password123", "Test User")
+	td, user, err := uc.Register(ctx, "test@example.com", "password123", "Test User", "081234567890", "customer")
 
 	require.Error(t, err)
 	var domainErr *apperror.DomainError
@@ -158,12 +195,13 @@ func TestAuthUsecase_Register_DuplicateEmail_ReturnsErrDuplicateEmail(t *testing
 
 	mockUserRepo.AssertExpectations(t)
 	mockTokenRepo.AssertNotCalled(t, "StoreTokenPair")
+	mockLimiter.AssertExpectations(t)
 }
 
 func TestAuthUsecase_Login_Success(t *testing.T) {
 	t.Parallel()
 
-	uc, mockUserRepo, mockTokenRepo, _ := setupAuthUsecase(t)
+	uc, mockUserRepo, mockTokenRepo, mockLimiter, _ := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	hashedPwd := hashPassword(t, "correctpassword")
@@ -174,7 +212,9 @@ func TestAuthUsecase_Login_Success(t *testing.T) {
 		Name:     "Existing User",
 	}
 
+	mockLimiter.On("IsLocked", ctx, "user@example.com").Return(false, nil)
 	mockUserRepo.On("FindByEmail", ctx, "user@example.com").Return(existingUser, nil)
+	mockLimiter.On("Reset", ctx, "user@example.com").Return(nil)
 	mockTokenRepo.On("StoreTokenPair", ctx, mock.MatchedBy(func(td *entity.TokenDetails) bool {
 		return td.AccessToken != "" && td.RefreshToken != ""
 	}), uint(42)).Return(nil)
@@ -191,12 +231,13 @@ func TestAuthUsecase_Login_Success(t *testing.T) {
 
 	mockUserRepo.AssertExpectations(t)
 	mockTokenRepo.AssertExpectations(t)
+	mockLimiter.AssertExpectations(t)
 }
 
 func TestAuthUsecase_Login_WrongPassword_ReturnsErrInvalidCredentials(t *testing.T) {
 	t.Parallel()
 
-	uc, mockUserRepo, mockTokenRepo, _ := setupAuthUsecase(t)
+	uc, mockUserRepo, mockTokenRepo, mockLimiter, _ := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	hashedPwd := hashPassword(t, "correctpassword")
@@ -207,7 +248,9 @@ func TestAuthUsecase_Login_WrongPassword_ReturnsErrInvalidCredentials(t *testing
 		Name:     "User",
 	}
 
+	mockLimiter.On("IsLocked", ctx, "user@example.com").Return(false, nil)
 	mockUserRepo.On("FindByEmail", ctx, "user@example.com").Return(existingUser, nil)
+	mockLimiter.On("RecordFailure", ctx, "user@example.com").Return(nil)
 
 	td, user, err := uc.Login(ctx, "user@example.com", "wrongpassword")
 
@@ -221,15 +264,18 @@ func TestAuthUsecase_Login_WrongPassword_ReturnsErrInvalidCredentials(t *testing
 
 	mockUserRepo.AssertExpectations(t)
 	mockTokenRepo.AssertNotCalled(t, "StoreTokenPair")
+	mockLimiter.AssertExpectations(t)
 }
 
 func TestAuthUsecase_Login_NonExistentEmail_ReturnsErrInvalidCredentials(t *testing.T) {
 	t.Parallel()
 
-	uc, mockUserRepo, mockTokenRepo, _ := setupAuthUsecase(t)
+	uc, mockUserRepo, mockTokenRepo, mockLimiter, _ := setupAuthUsecase(t)
 	ctx := context.Background()
 
+	mockLimiter.On("IsLocked", ctx, "nonexistent@example.com").Return(false, nil)
 	mockUserRepo.On("FindByEmail", ctx, "nonexistent@example.com").Return((*entity.User)(nil), apperror.ErrNotFound)
+	mockLimiter.On("RecordFailure", ctx, "nonexistent@example.com").Return(nil)
 
 	td, user, err := uc.Login(ctx, "nonexistent@example.com", "anypassword")
 
@@ -243,12 +289,13 @@ func TestAuthUsecase_Login_NonExistentEmail_ReturnsErrInvalidCredentials(t *test
 
 	mockUserRepo.AssertExpectations(t)
 	mockTokenRepo.AssertNotCalled(t, "StoreTokenPair")
+	mockLimiter.AssertExpectations(t)
 }
 
 func TestAuthUsecase_Logout_BlacklistsAccessToken(t *testing.T) {
 	t.Parallel()
 
-	uc, _, mockTokenRepo, tokenSvc := setupAuthUsecase(t)
+	uc, _, mockTokenRepo, _, tokenSvc := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	td, err := tokenSvc.GenerateTokenPair(1, "user@example.com")
@@ -265,7 +312,7 @@ func TestAuthUsecase_Logout_BlacklistsAccessToken(t *testing.T) {
 func TestAuthUsecase_Logout_RevokesRefreshToken(t *testing.T) {
 	t.Parallel()
 
-	uc, _, mockTokenRepo, tokenSvc := setupAuthUsecase(t)
+	uc, _, mockTokenRepo, _, tokenSvc := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	td, err := tokenSvc.GenerateTokenPair(1, "user@example.com")
@@ -282,7 +329,7 @@ func TestAuthUsecase_Logout_RevokesRefreshToken(t *testing.T) {
 func TestAuthUsecase_Logout_EmptyTokens_DoesNothing(t *testing.T) {
 	t.Parallel()
 
-	uc, mockUserRepo, mockTokenRepo, _ := setupAuthUsecase(t)
+	uc, mockUserRepo, mockTokenRepo, _, _ := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	err := uc.Logout(ctx, "", "")
@@ -301,7 +348,7 @@ func TestAuthUsecase_Logout_EmptyTokens_DoesNothing(t *testing.T) {
 func TestAuthUsecase_RefreshToken_Success(t *testing.T) {
 	t.Parallel()
 
-	uc, mockUserRepo, mockTokenRepo, tokenSvc := setupAuthUsecase(t)
+	uc, mockUserRepo, mockTokenRepo, _, tokenSvc := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	existingUser := &entity.User{
@@ -342,7 +389,7 @@ func TestAuthUsecase_RefreshToken_Success(t *testing.T) {
 func TestAuthUsecase_RefreshToken_InvalidToken_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	uc, mockUserRepo, mockTokenRepo, _ := setupAuthUsecase(t)
+	uc, mockUserRepo, mockTokenRepo, _, _ := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	_, err := uc.RefreshToken(ctx, "not-a-valid-jwt-token")
@@ -360,7 +407,7 @@ func TestAuthUsecase_RefreshToken_InvalidToken_ReturnsError(t *testing.T) {
 func TestAuthUsecase_RefreshToken_RevokedToken_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	uc, mockUserRepo, mockTokenRepo, tokenSvc := setupAuthUsecase(t)
+	uc, mockUserRepo, mockTokenRepo, _, tokenSvc := setupAuthUsecase(t)
 	ctx := context.Background()
 
 	td, err := tokenSvc.GenerateTokenPair(1, "user@example.com")
@@ -378,4 +425,133 @@ func TestAuthUsecase_RefreshToken_RevokedToken_ReturnsError(t *testing.T) {
 
 	mockUserRepo.AssertNotCalled(t, "FindByID")
 	mockTokenRepo.AssertNotCalled(t, "StoreTokenPair")
+}
+
+func TestAuthUsecase_Register_WithWhatsAppAndRole_Success(t *testing.T) {
+	t.Parallel()
+	userRepo := new(MockUserRepository)
+	tokenRepo := new(MockTokenRepository)
+	tokenService := service.NewTokenService("test-access-secret", "test-refresh-secret", 15*time.Minute, 7*24*time.Hour)
+	limiter := new(MockLoginLimiter)
+	uc := NewAuthUsecase(userRepo, tokenRepo, tokenService, limiter, bcrypt.MinCost)
+
+	userRepo.On("ExistsByEmail", mock.Anything, "test@example.com").Return(false, nil)
+	userRepo.On("FindByWhatsApp", mock.Anything, "081234567890").Return((*entity.User)(nil), apperror.ErrNotFound)
+	userRepo.On("Create", mock.Anything, mock.MatchedBy(func(u *entity.User) bool {
+		return u.Email == "test@example.com" && u.WhatsApp == "081234567890" && u.Role == "customer" && u.ConsentAt != nil
+	})).Return(nil).Run(func(args mock.Arguments) {
+		u := args.Get(1).(*entity.User)
+		u.ID = 1
+		u.CreatedAt = time.Now()
+		u.UpdatedAt = time.Now()
+	})
+	tokenRepo.On("StoreTokenPair", mock.Anything, mock.Anything, uint(1)).Return(nil)
+
+	td, user, err := uc.Register(context.Background(), "test@example.com", "password123", "Test User", "081234567890", "customer")
+
+	require.NoError(t, err)
+	assert.NotNil(t, td)
+	assert.Equal(t, "081234567890", user.WhatsApp)
+	assert.Equal(t, "customer", user.Role)
+	userRepo.AssertExpectations(t)
+}
+
+func TestAuthUsecase_Login_WithIdentifierEmail_Success(t *testing.T) {
+	t.Parallel()
+	userRepo := new(MockUserRepository)
+	tokenRepo := new(MockTokenRepository)
+	tokenService := service.NewTokenService("test-access-secret", "test-refresh-secret", 15*time.Minute, 7*24*time.Hour)
+	limiter := new(MockLoginLimiter)
+	uc := NewAuthUsecase(userRepo, tokenRepo, tokenService, limiter, bcrypt.MinCost)
+
+	hashedPw, _ := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+	existingUser := &entity.User{
+		ID: 1, Email: "test@example.com", Password: string(hashedPw), Name: "Test User",
+		WhatsApp: "081234567890", Role: "customer",
+	}
+	limiter.On("IsLocked", mock.Anything, "test@example.com").Return(false, nil)
+	userRepo.On("FindByEmail", mock.Anything, "test@example.com").Return(existingUser, nil)
+	limiter.On("Reset", mock.Anything, "test@example.com").Return(nil)
+	tokenRepo.On("StoreTokenPair", mock.Anything, mock.Anything, uint(1)).Return(nil)
+
+	td, user, err := uc.Login(context.Background(), "test@example.com", "password123")
+
+	require.NoError(t, err)
+	assert.NotNil(t, td)
+	assert.Equal(t, "Test User", user.Name)
+	userRepo.AssertExpectations(t)
+	limiter.AssertExpectations(t)
+}
+
+func TestAuthUsecase_Login_WithIdentifierWhatsApp_Success(t *testing.T) {
+	t.Parallel()
+	userRepo := new(MockUserRepository)
+	tokenRepo := new(MockTokenRepository)
+	tokenService := service.NewTokenService("test-access-secret", "test-refresh-secret", 15*time.Minute, 7*24*time.Hour)
+	limiter := new(MockLoginLimiter)
+	uc := NewAuthUsecase(userRepo, tokenRepo, tokenService, limiter, bcrypt.MinCost)
+
+	hashedPw, _ := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+	existingUser := &entity.User{
+		ID: 1, Email: "wa@example.com", Password: string(hashedPw), Name: "WA User",
+		WhatsApp: "081234567890", Role: "customer",
+	}
+	limiter.On("IsLocked", mock.Anything, "081234567890").Return(false, nil)
+	userRepo.On("FindByWhatsApp", mock.Anything, "081234567890").Return(existingUser, nil)
+	limiter.On("Reset", mock.Anything, "081234567890").Return(nil)
+	tokenRepo.On("StoreTokenPair", mock.Anything, mock.Anything, uint(1)).Return(nil)
+
+	td, user, err := uc.Login(context.Background(), "081234567890", "password123")
+
+	require.NoError(t, err)
+	assert.NotNil(t, td)
+	assert.Equal(t, "WA User", user.Name)
+	userRepo.AssertExpectations(t)
+	limiter.AssertExpectations(t)
+}
+
+func TestAuthUsecase_Login_WrongPassword_RecordsFailure(t *testing.T) {
+	t.Parallel()
+	userRepo := new(MockUserRepository)
+	tokenRepo := new(MockTokenRepository)
+	tokenService := service.NewTokenService("test-access-secret", "test-refresh-secret", 15*time.Minute, 7*24*time.Hour)
+	limiter := new(MockLoginLimiter)
+	uc := NewAuthUsecase(userRepo, tokenRepo, tokenService, limiter, bcrypt.MinCost)
+
+	hashedPw, _ := bcrypt.GenerateFromPassword([]byte("correctpassword"), bcrypt.MinCost)
+	existingUser := &entity.User{
+		ID: 1, Email: "test@example.com", Password: string(hashedPw), Name: "Test",
+		WhatsApp: "081234567890", Role: "customer",
+	}
+	limiter.On("IsLocked", mock.Anything, "test@example.com").Return(false, nil)
+	userRepo.On("FindByEmail", mock.Anything, "test@example.com").Return(existingUser, nil)
+	limiter.On("RecordFailure", mock.Anything, "test@example.com").Return(nil)
+
+	_, _, err := uc.Login(context.Background(), "test@example.com", "wrongpassword")
+
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, apperror.ErrInvalidCredentials, domainErr.Err)
+	limiter.AssertExpectations(t)
+}
+
+func TestAuthUsecase_Login_Locked_ReturnsInvalidCredentials(t *testing.T) {
+	t.Parallel()
+	userRepo := new(MockUserRepository)
+	tokenRepo := new(MockTokenRepository)
+	tokenService := service.NewTokenService("test-access-secret", "test-refresh-secret", 15*time.Minute, 7*24*time.Hour)
+	limiter := new(MockLoginLimiter)
+	uc := NewAuthUsecase(userRepo, tokenRepo, tokenService, limiter, bcrypt.MinCost)
+
+	limiter.On("IsLocked", mock.Anything, "test@example.com").Return(true, nil)
+
+	_, _, err := uc.Login(context.Background(), "test@example.com", "anypassword")
+
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, apperror.ErrInvalidCredentials, domainErr.Err)
+	userRepo.AssertNotCalled(t, "FindByEmail")
+	userRepo.AssertNotCalled(t, "FindByWhatsApp")
 }

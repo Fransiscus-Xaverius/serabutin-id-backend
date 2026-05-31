@@ -23,7 +23,9 @@ type Config struct {
 	AccessTokenDuration  time.Duration
 	RefreshTokenDuration time.Duration
 
-	BcryptCost int
+	BcryptCost          int
+	LoginMaxAttempts    int
+	LoginLockoutMinutes int
 }
 
 func Load() (*Config, error) {
@@ -46,6 +48,9 @@ func Load() (*Config, error) {
 
 	viper.SetDefault("BCRYPT_COST", 12)
 
+	viper.SetDefault("LOGIN_MAX_ATTEMPTS", 5)
+	viper.SetDefault("LOGIN_LOCKOUT_MINUTES", 15)
+
 	var cfg Config
 
 	err := viper.Unmarshal(&cfg)
@@ -65,6 +70,8 @@ func Load() (*Config, error) {
 	cfg.AccessTokenDuration = time.Duration(viper.GetInt("ACCESS_TOKEN_DURATION_MINUTES")) * time.Minute
 	cfg.RefreshTokenDuration = time.Duration(viper.GetInt("REFRESH_TOKEN_DURATION_HOURS")) * time.Hour
 	cfg.BcryptCost = viper.GetInt("BCRYPT_COST")
+	cfg.LoginMaxAttempts = viper.GetInt("LOGIN_MAX_ATTEMPTS")
+	cfg.LoginLockoutMinutes = viper.GetInt("LOGIN_LOCKOUT_MINUTES")
 
 	return &cfg, nil
 }

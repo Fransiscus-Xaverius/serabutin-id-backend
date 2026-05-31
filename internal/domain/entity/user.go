@@ -7,6 +7,9 @@ type User struct {
 	Email     string
 	Password  string
 	Name      string
+	WhatsApp  string
+	Role      string
+	ConsentAt *time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

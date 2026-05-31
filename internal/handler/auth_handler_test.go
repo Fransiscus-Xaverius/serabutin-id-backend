@@ -16,6 +16,7 @@ import (
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/service"
+	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
 	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
 )
@@ -48,6 +49,38 @@ func (m *mockUserRepo) FindByID(ctx context.Context, id uint) (*entity.User, err
 func (m *mockUserRepo) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	args := m.Called(ctx, email)
 	return args.Bool(0), args.Error(1)
+}
+
+func (m *mockUserRepo) FindByWhatsApp(ctx context.Context, whatsapp string) (*entity.User, error) {
+	args := m.Called(ctx, whatsapp)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*entity.User), args.Error(1)
+}
+
+type mockLoginLimiter struct {
+	mock.Mock
+}
+
+func (m *mockLoginLimiter) IsLocked(ctx context.Context, identifier string) (bool, error) {
+	args := m.Called(ctx, identifier)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *mockLoginLimiter) RecordFailure(ctx context.Context, identifier string) error {
+	args := m.Called(ctx, identifier)
+	return args.Error(0)
+}
+
+func (m *mockLoginLimiter) Reset(ctx context.Context, identifier string) error {
+	args := m.Called(ctx, identifier)
+	return args.Error(0)
+}
+
+func (m *mockLoginLimiter) RemainingAttempts(ctx context.Context, identifier string) (int, error) {
+	args := m.Called(ctx, identifier)
+	return args.Int(0), args.Error(1)
 }
 
 type mockTokenRepo struct {
@@ -98,14 +131,15 @@ type apiErrorResponse struct {
 	Details   interface{} `json:"details,omitempty"`
 }
 
-func setupTestApp(t *testing.T) (*fiber.App, *mockUserRepo, *mockTokenRepo, *service.TokenService) {
+func setupTestApp(t *testing.T) (*fiber.App, *mockUserRepo, *mockTokenRepo, *mockLoginLimiter, *service.TokenService) {
 	t.Helper()
 
 	mUserRepo := new(mockUserRepo)
 	mTokenRepo := new(mockTokenRepo)
+	mLimiter := new(mockLoginLimiter)
 	tokenSvc := service.NewTokenService("test-access-secret", "test-refresh-secret", 15*time.Minute, 7*24*time.Hour)
 
-	uc := usecase.NewAuthUsecase(mUserRepo, mTokenRepo, tokenSvc, bcrypt.MinCost)
+	uc := usecase.NewAuthUsecase(mUserRepo, mTokenRepo, tokenSvc, mLimiter, bcrypt.MinCost)
 	handler := NewAuthHandler(uc)
 
 	app := fiber.New(fiber.Config{
@@ -117,15 +151,16 @@ func setupTestApp(t *testing.T) (*fiber.App, *mockUserRepo, *mockTokenRepo, *ser
 	app.Post("/logout", handler.Logout)
 	app.Post("/refresh", handler.RefreshToken)
 
-	return app, mUserRepo, mTokenRepo, tokenSvc
+	return app, mUserRepo, mTokenRepo, mLimiter, tokenSvc
 }
 
 func TestAuthHandler_Register_ValidRequest_Returns201(t *testing.T) {
 	t.Parallel()
 
-	app, mUserRepo, mTokenRepo, _ := setupTestApp(t)
+	app, mUserRepo, mTokenRepo, mLimiter, _ := setupTestApp(t)
 
 	mUserRepo.On("ExistsByEmail", mock.Anything, "test@example.com").Return(false, nil)
+	mUserRepo.On("FindByWhatsApp", mock.Anything, "081234567890").Return((*entity.User)(nil), apperror.ErrNotFound)
 	mUserRepo.On("Create", mock.Anything, mock.MatchedBy(func(u *entity.User) bool {
 		return u.Email == "test@example.com" && u.Name == "Test User"
 	})).Run(func(args mock.Arguments) {
@@ -136,7 +171,7 @@ func TestAuthHandler_Register_ValidRequest_Returns201(t *testing.T) {
 		return td.AccessToken != "" && td.RefreshToken != ""
 	}), uint(1)).Return(nil)
 
-	body := `{"email":"test@example.com","password":"password123","name":"Test User"}`
+	body := `{"email":"test@example.com","password":"password123","name":"Test User","whatsapp":"081234567890","role":"customer"}`
 	req := httptest.NewRequest("POST", "/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -169,14 +204,15 @@ func TestAuthHandler_Register_ValidRequest_Returns201(t *testing.T) {
 
 	mUserRepo.AssertExpectations(t)
 	mTokenRepo.AssertExpectations(t)
+	mLimiter.AssertExpectations(t)
 }
 
 func TestAuthHandler_Register_InvalidEmail_Returns400(t *testing.T) {
 	t.Parallel()
 
-	app, _, _, _ := setupTestApp(t)
+	app, _, _, _, _ := setupTestApp(t)
 
-	body := `{"email":"not-an-email","password":"password123","name":"Test User"}`
+	body := `{"email":"not-an-email","password":"password123","name":"Test User","whatsapp":"081234567890","role":"customer"}`
 	req := httptest.NewRequest("POST", "/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -192,9 +228,9 @@ func TestAuthHandler_Register_InvalidEmail_Returns400(t *testing.T) {
 func TestAuthHandler_Register_ShortPassword_Returns400(t *testing.T) {
 	t.Parallel()
 
-	app, _, _, _ := setupTestApp(t)
+	app, _, _, _, _ := setupTestApp(t)
 
-	body := `{"email":"test@example.com","password":"short","name":"Test User"}`
+	body := `{"email":"test@example.com","password":"short","name":"Test User","whatsapp":"081234567890","role":"customer"}`
 	req := httptest.NewRequest("POST", "/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -210,11 +246,11 @@ func TestAuthHandler_Register_ShortPassword_Returns400(t *testing.T) {
 func TestAuthHandler_Register_DuplicateEmail_Returns409(t *testing.T) {
 	t.Parallel()
 
-	app, mUserRepo, _, _ := setupTestApp(t)
+	app, mUserRepo, _, mLimiter, _ := setupTestApp(t)
 
 	mUserRepo.On("ExistsByEmail", mock.Anything, "test@example.com").Return(true, nil)
 
-	body := `{"email":"test@example.com","password":"password123","name":"Test User"}`
+	body := `{"email":"test@example.com","password":"password123","name":"Test User","whatsapp":"081234567890","role":"customer"}`
 	req := httptest.NewRequest("POST", "/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -227,12 +263,13 @@ func TestAuthHandler_Register_DuplicateEmail_Returns409(t *testing.T) {
 	assert.Equal(t, "EMAIL_EXISTS", apiResp.Code)
 
 	mUserRepo.AssertExpectations(t)
+	mLimiter.AssertExpectations(t)
 }
 
 func TestAuthHandler_Login_ValidRequest_Returns200(t *testing.T) {
 	t.Parallel()
 
-	app, mUserRepo, mTokenRepo, _ := setupTestApp(t)
+	app, mUserRepo, mTokenRepo, mLimiter, _ := setupTestApp(t)
 
 	hashedPwd, err := bcrypt.GenerateFromPassword([]byte("correctpassword"), bcrypt.MinCost)
 	require.NoError(t, err)
@@ -244,12 +281,14 @@ func TestAuthHandler_Login_ValidRequest_Returns200(t *testing.T) {
 		Name:     "Existing User",
 	}
 
+	mLimiter.On("IsLocked", mock.Anything, "user@example.com").Return(false, nil)
 	mUserRepo.On("FindByEmail", mock.Anything, "user@example.com").Return(existingUser, nil)
+	mLimiter.On("Reset", mock.Anything, "user@example.com").Return(nil)
 	mTokenRepo.On("StoreTokenPair", mock.Anything, mock.MatchedBy(func(td *entity.TokenDetails) bool {
 		return td.AccessToken != "" && td.RefreshToken != ""
 	}), uint(42)).Return(nil)
 
-	body := `{"email":"user@example.com","password":"correctpassword"}`
+	body := `{"identifier":"user@example.com","password":"correctpassword"}`
 	req := httptest.NewRequest("POST", "/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -278,12 +317,13 @@ func TestAuthHandler_Login_ValidRequest_Returns200(t *testing.T) {
 
 	mUserRepo.AssertExpectations(t)
 	mTokenRepo.AssertExpectations(t)
+	mLimiter.AssertExpectations(t)
 }
 
 func TestAuthHandler_Login_WrongPassword_Returns401(t *testing.T) {
 	t.Parallel()
 
-	app, mUserRepo, _, _ := setupTestApp(t)
+	app, mUserRepo, _, mLimiter, _ := setupTestApp(t)
 
 	hashedPwd, err := bcrypt.GenerateFromPassword([]byte("correctpassword"), bcrypt.MinCost)
 	require.NoError(t, err)
@@ -295,9 +335,11 @@ func TestAuthHandler_Login_WrongPassword_Returns401(t *testing.T) {
 		Name:     "User",
 	}
 
+	mLimiter.On("IsLocked", mock.Anything, "user@example.com").Return(false, nil)
 	mUserRepo.On("FindByEmail", mock.Anything, "user@example.com").Return(existingUser, nil)
+	mLimiter.On("RecordFailure", mock.Anything, "user@example.com").Return(nil)
 
-	body := `{"email":"user@example.com","password":"wrongpassword"}`
+	body := `{"identifier":"user@example.com","password":"wrongpassword"}`
 	req := httptest.NewRequest("POST", "/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -310,12 +352,13 @@ func TestAuthHandler_Login_WrongPassword_Returns401(t *testing.T) {
 	assert.Equal(t, "INVALID_CREDENTIALS", apiResp.Code)
 
 	mUserRepo.AssertExpectations(t)
+	mLimiter.AssertExpectations(t)
 }
 
 func TestAuthHandler_Logout_WithBearerToken_Returns200(t *testing.T) {
 	t.Parallel()
 
-	app, _, mTokenRepo, tokenSvc := setupTestApp(t)
+	app, _, mTokenRepo, _, tokenSvc := setupTestApp(t)
 
 	td, err := tokenSvc.GenerateTokenPair(1, "user@example.com")
 	require.NoError(t, err)
@@ -341,7 +384,7 @@ func TestAuthHandler_Logout_WithBearerToken_Returns200(t *testing.T) {
 func TestAuthHandler_RefreshToken_ValidRequest_Returns200(t *testing.T) {
 	t.Parallel()
 
-	app, mUserRepo, mTokenRepo, tokenSvc := setupTestApp(t)
+	app, mUserRepo, mTokenRepo, _, tokenSvc := setupTestApp(t)
 
 	existingUser := &entity.User{
 		ID:       7,
@@ -391,7 +434,7 @@ func TestAuthHandler_RefreshToken_ValidRequest_Returns200(t *testing.T) {
 func TestAuthHandler_RefreshToken_MissingBody_Returns400(t *testing.T) {
 	t.Parallel()
 
-	app, _, _, _ := setupTestApp(t)
+	app, _, _, _, _ := setupTestApp(t)
 
 	req := httptest.NewRequest("POST", "/refresh", strings.NewReader(""))
 	req.Header.Set("Content-Type", "application/json")
@@ -404,7 +447,7 @@ func TestAuthHandler_RefreshToken_MissingBody_Returns400(t *testing.T) {
 func TestAuthHandler_RefreshToken_MissingRefreshToken_Returns400(t *testing.T) {
 	t.Parallel()
 
-	app, _, _, _ := setupTestApp(t)
+	app, _, _, _, _ := setupTestApp(t)
 
 	body := `{}`
 	req := httptest.NewRequest("POST", "/refresh", strings.NewReader(body))

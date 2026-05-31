@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
@@ -13,10 +14,18 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+type LoginLimiter interface {
+	IsLocked(ctx context.Context, identifier string) (bool, error)
+	RecordFailure(ctx context.Context, identifier string) error
+	Reset(ctx context.Context, identifier string) error
+	RemainingAttempts(ctx context.Context, identifier string) (int, error)
+}
+
 type AuthUsecase struct {
 	userRepo     repository.UserRepository
 	tokenRepo    repository.TokenRepository
 	tokenService *service.TokenService
+	loginLimiter LoginLimiter
 	bcryptCost   int
 }
 
@@ -24,17 +33,19 @@ func NewAuthUsecase(
 	userRepo repository.UserRepository,
 	tokenRepo repository.TokenRepository,
 	tokenService *service.TokenService,
+	loginLimiter LoginLimiter,
 	bcryptCost int,
 ) *AuthUsecase {
 	return &AuthUsecase{
 		userRepo:     userRepo,
 		tokenRepo:    tokenRepo,
 		tokenService: tokenService,
+		loginLimiter: loginLimiter,
 		bcryptCost:   bcryptCost,
 	}
 }
 
-func (uc *AuthUsecase) Register(ctx context.Context, email, password, name string) (*entity.TokenDetails, *entity.User, error) {
+func (uc *AuthUsecase) Register(ctx context.Context, email, password, name, whatsapp, role string) (*entity.TokenDetails, *entity.User, error) {
 	exists, err := uc.userRepo.ExistsByEmail(ctx, email)
 	if err != nil {
 		log.Printf("[AuthUsecase.Register] check email exists error: %v", err)
@@ -44,15 +55,28 @@ func (uc *AuthUsecase) Register(ctx context.Context, email, password, name strin
 		return nil, nil, apperror.NewDomainError(apperror.ErrDuplicateEmail, "EMAIL_EXISTS", "email already registered")
 	}
 
+	waExists, err := uc.userRepo.FindByWhatsApp(ctx, whatsapp)
+	if err != nil && !errors.Is(err, apperror.ErrNotFound) {
+		log.Printf("[AuthUsecase.Register] check whatsapp exists error: %v", err)
+		return nil, nil, err
+	}
+	if waExists != nil {
+		return nil, nil, apperror.NewDomainError(apperror.ErrDuplicateEmail, "WHATSAPP_EXISTS", "whatsapp already registered")
+	}
+
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), uc.bcryptCost)
 	if err != nil {
 		return nil, nil, apperror.NewDomainError(apperror.ErrInternalServer, "HASH_FAILED", "failed to hash password")
 	}
 
+	now := time.Now()
 	user := &entity.User{
-		Email:    email,
-		Password: string(hashedPassword),
-		Name:     name,
+		Email:     email,
+		Password:  string(hashedPassword),
+		Name:      name,
+		WhatsApp:  whatsapp,
+		Role:      role,
+		ConsentAt: &now,
 	}
 
 	if err := uc.userRepo.Create(ctx, user); err != nil {
@@ -74,19 +98,37 @@ func (uc *AuthUsecase) Register(ctx context.Context, email, password, name strin
 	return td, user, nil
 }
 
-func (uc *AuthUsecase) Login(ctx context.Context, email, password string) (*entity.TokenDetails, *entity.User, error) {
-	user, err := uc.userRepo.FindByEmail(ctx, email)
+func (uc *AuthUsecase) Login(ctx context.Context, identifier, password string) (*entity.TokenDetails, *entity.User, error) {
+	locked, err := uc.loginLimiter.IsLocked(ctx, identifier)
+	if err != nil {
+		log.Printf("[AuthUsecase.Login] check lockout error: %v", err)
+	}
+	if locked {
+		return nil, nil, apperror.NewDomainError(apperror.ErrInvalidCredentials, "INVALID_CREDENTIALS", "invalid email/whatsapp or password")
+	}
+
+	var user *entity.User
+	if strings.Contains(identifier, "@") {
+		user, err = uc.userRepo.FindByEmail(ctx, identifier)
+	} else {
+		user, err = uc.userRepo.FindByWhatsApp(ctx, identifier)
+	}
+
 	if err != nil {
 		if errors.Is(err, apperror.ErrNotFound) {
-			return nil, nil, apperror.NewDomainError(apperror.ErrInvalidCredentials, "INVALID_CREDENTIALS", "invalid email or password")
+			_ = uc.loginLimiter.RecordFailure(ctx, identifier)
+			return nil, nil, apperror.NewDomainError(apperror.ErrInvalidCredentials, "INVALID_CREDENTIALS", "invalid email/whatsapp or password")
 		}
 		log.Printf("[AuthUsecase.Login] find user error: %v", err)
 		return nil, nil, err
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
-		return nil, nil, apperror.NewDomainError(apperror.ErrInvalidCredentials, "INVALID_CREDENTIALS", "invalid email or password")
+		_ = uc.loginLimiter.RecordFailure(ctx, identifier)
+		return nil, nil, apperror.NewDomainError(apperror.ErrInvalidCredentials, "INVALID_CREDENTIALS", "invalid email/whatsapp or password")
 	}
+
+	_ = uc.loginLimiter.Reset(ctx, identifier)
 
 	td, err := uc.tokenService.GenerateTokenPair(user.ID, user.Email)
 	if err != nil {

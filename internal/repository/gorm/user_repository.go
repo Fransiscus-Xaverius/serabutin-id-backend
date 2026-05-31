@@ -20,9 +20,12 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 
 func (r *UserRepository) Create(ctx context.Context, user *entity.User) error {
 	m := &model.UserModel{
-		Email:    user.Email,
-		Password: user.Password,
-		Name:     user.Name,
+		Email:     user.Email,
+		Password:  user.Password,
+		Name:      user.Name,
+		WhatsApp:  user.WhatsApp,
+		Role:      user.Role,
+		ConsentAt: user.ConsentAt,
 	}
 
 	if err := r.db.WithContext(ctx).Create(m).Error; err != nil {
@@ -67,6 +70,20 @@ func (r *UserRepository) FindByID(ctx context.Context, id uint) (*entity.User, e
 	return r.toEntity(&m), nil
 }
 
+func (r *UserRepository) FindByWhatsApp(ctx context.Context, whatsapp string) (*entity.User, error) {
+	var m model.UserModel
+
+	err := r.db.WithContext(ctx).Where("whats_app = ?", whatsapp).First(&m).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, apperror.NewDomainError(apperror.ErrNotFound, "USER_NOT_FOUND", "user not found")
+		}
+		return nil, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+
+	return r.toEntity(&m), nil
+}
+
 func (r *UserRepository) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	var count int64
 
@@ -84,6 +101,9 @@ func (r *UserRepository) toEntity(m *model.UserModel) *entity.User {
 		Email:     m.Email,
 		Password:  m.Password,
 		Name:      m.Name,
+		WhatsApp:  m.WhatsApp,
+		Role:      m.Role,
+		ConsentAt: m.ConsentAt,
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
 	}

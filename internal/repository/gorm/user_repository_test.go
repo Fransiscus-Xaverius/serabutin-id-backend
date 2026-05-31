@@ -190,3 +190,37 @@ func TestUserRepository_ExistsByEmail_False(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
+
+func TestUserRepository_FindByWhatsApp_Found(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	repo := NewUserRepository(db)
+
+	user := &entity.User{
+		Email:    "wa@example.com",
+		Password: "hashedpassword",
+		Name:     "WA User",
+		WhatsApp: "081234567890",
+		Role:     "customer",
+	}
+	require.NoError(t, repo.Create(context.Background(), user))
+
+	found, err := repo.FindByWhatsApp(context.Background(), "081234567890")
+
+	require.NoError(t, err)
+	assert.Equal(t, user.ID, found.ID)
+	assert.Equal(t, "081234567890", found.WhatsApp)
+}
+
+func TestUserRepository_FindByWhatsApp_NotFound_ReturnsErrNotFound(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	repo := NewUserRepository(db)
+
+	_, err := repo.FindByWhatsApp(context.Background(), "089999999999")
+
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, apperror.ErrNotFound, domainErr.Err)
+}

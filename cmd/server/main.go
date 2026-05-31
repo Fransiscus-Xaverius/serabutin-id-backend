@@ -61,8 +61,9 @@ func main() {
 	userRepo := gormrepo.NewUserRepository(db)
 	tokenRepo := redisrepo.NewTokenRepository(redisClient)
 	tokenService := service.NewTokenService(cfg.JWTSecret, cfg.JWTRefreshSecret, cfg.AccessTokenDuration, cfg.RefreshTokenDuration)
+	loginLimiter := service.NewLoginLimiter(redisClient, cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute)
 
-	authUsecase := usecase.NewAuthUsecase(userRepo, tokenRepo, tokenService, cfg.BcryptCost)
+	authUsecase := usecase.NewAuthUsecase(userRepo, tokenRepo, tokenService, loginLimiter, cfg.BcryptCost)
 	authHandler := handler.NewAuthHandler(authUsecase)
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
 	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)

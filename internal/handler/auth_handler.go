@@ -35,7 +35,7 @@ func (h *AuthHandler) Register(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apiErr)
 	}
 
-	td, user, err := h.authUsecase.Register(c.Context(), req.Email, req.Password, req.Name)
+	td, user, err := h.authUsecase.Register(c.Context(), req.Email, req.Password, req.Name, req.WhatsApp, req.Role)
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
@@ -45,9 +45,11 @@ func (h *AuthHandler) Register(c fiber.Ctx) error {
 		RefreshToken: td.RefreshToken,
 		ExpiresIn:    int64(time.Until(td.AtExpires).Seconds()),
 		User: dto.UserResponse{
-			ID:    user.ID,
-			Email: user.Email,
-			Name:  user.Name,
+			ID:       user.ID,
+			Email:    user.Email,
+			Name:     user.Name,
+			WhatsApp: user.WhatsApp,
+			Role:     user.Role,
 		},
 	}
 
@@ -67,7 +69,7 @@ func (h *AuthHandler) Login(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apiErr)
 	}
 
-	td, user, err := h.authUsecase.Login(c.Context(), req.Email, req.Password)
+	td, user, err := h.authUsecase.Login(c.Context(), req.Identifier, req.Password)
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
@@ -77,9 +79,11 @@ func (h *AuthHandler) Login(c fiber.Ctx) error {
 		RefreshToken: td.RefreshToken,
 		ExpiresIn:    int64(time.Until(td.AtExpires).Seconds()),
 		User: dto.UserResponse{
-			ID:    user.ID,
-			Email: user.Email,
-			Name:  user.Name,
+			ID:       user.ID,
+			Email:    user.Email,
+			Name:     user.Name,
+			WhatsApp: user.WhatsApp,
+			Role:     user.Role,
 		},
 	}
 
