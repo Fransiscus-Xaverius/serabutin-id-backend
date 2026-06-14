@@ -59,6 +59,11 @@ func (m *mockUserRepo) FindByWhatsApp(ctx context.Context, whatsapp string) (*en
 	return args.Get(0).(*entity.User), args.Error(1)
 }
 
+func (m *mockUserRepo) Update(ctx context.Context, user *entity.User) error {
+	args := m.Called(ctx, user)
+	return args.Error(0)
+}
+
 type mockLoginLimiter struct {
 	mock.Mock
 }
@@ -160,7 +165,7 @@ func TestAuthHandler_Register_ValidRequest_Returns201(t *testing.T) {
 	app, mUserRepo, mTokenRepo, mLimiter, _ := setupTestApp(t)
 
 	mUserRepo.On("ExistsByEmail", mock.Anything, "test@example.com").Return(false, nil)
-	mUserRepo.On("FindByWhatsApp", mock.Anything, "081234567890").Return((*entity.User)(nil), apperror.ErrNotFound)
+	mUserRepo.On("FindByWhatsApp", mock.Anything, "+6281234567890").Return((*entity.User)(nil), apperror.ErrNotFound)
 	mUserRepo.On("Create", mock.Anything, mock.MatchedBy(func(u *entity.User) bool {
 		return u.Email == "test@example.com" && u.Name == "Test User"
 	})).Run(func(args mock.Arguments) {

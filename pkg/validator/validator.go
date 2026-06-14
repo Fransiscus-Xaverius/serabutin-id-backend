@@ -5,12 +5,16 @@ import (
 	"strings"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/serabutin/serabutin-id-backend/pkg/whatsapp"
 )
 
 var validate *validator.Validate
 
 func init() {
 	validate = validator.New()
+	validate.RegisterValidation("whatsapp", func(fl validator.FieldLevel) bool {
+		return whatsapp.Validate(fl.Field().String())
+	})
 }
 
 type ValidationError struct {

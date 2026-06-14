@@ -22,8 +22,10 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/handler"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/config"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/database"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/imaging"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/logger"
 	infraredis "github.com/serabutin/serabutin-id-backend/internal/infrastructure/redis"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/storage"
 	"github.com/serabutin/serabutin-id-backend/internal/middleware"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
 	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
@@ -53,20 +55,36 @@ func main() {
 		logger.Log.Fatal().Err(err).Msg("failed to connect to redis")
 	}
 
-	if err := db.AutoMigrate(&model.UserModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	logger.Log.Info().Msg("database migrated successfully")
 
 	userRepo := gormrepo.NewUserRepository(db)
+	serviceRepo := gormrepo.NewServiceRepository(db)
+	bookingRepo := gormrepo.NewBookingRepository(db)
 	tokenRepo := redisrepo.NewTokenRepository(redisClient)
 	tokenService := service.NewTokenService(cfg.JWTSecret, cfg.JWTRefreshSecret, cfg.AccessTokenDuration, cfg.RefreshTokenDuration)
 	loginLimiter := service.NewLoginLimiter(redisClient, cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute)
 
 	authUsecase := usecase.NewAuthUsecase(userRepo, tokenRepo, tokenService, loginLimiter, cfg.BcryptCost)
 	authHandler := handler.NewAuthHandler(authUsecase)
+	profileUsecase := usecase.NewProfileUsecase(userRepo)
+	profileHandler := handler.NewProfileHandler(profileUsecase)
+	serviceUsecase := usecase.NewServiceUsecase(serviceRepo, userRepo)
+	serviceHandler := handler.NewServiceHandler(serviceUsecase, profileUsecase)
+	bookingUsecase := usecase.NewBookingUsecase(bookingRepo, serviceRepo, userRepo, cfg.PlatformFee)
+	bookingHandler := handler.NewBookingHandler(bookingUsecase, profileUsecase, serviceUsecase)
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
 	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)
+
+	storageRepo, err := storage.NewStorageRepository(cfg)
+	if err != nil {
+		logger.Log.Fatal().Err(err).Msg("failed to create storage repository")
+	}
+	imageProcessor := imaging.NewProcessor()
+	uploadUsecase := usecase.NewUploadUsecase(storageRepo, imageProcessor)
+	uploadHandler := handler.NewUploadHandler(uploadUsecase)
 
 	app := fiber.New(fiber.Config{
 		AppName:      cfg.AppName,
@@ -74,7 +92,7 @@ func main() {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 		ErrorHandler: apierror.GlobalErrorHandler,
-		BodyLimit:    1 * 1024 * 1024,
+		BodyLimit:    50 * 1024 * 1024,
 	})
 
 	app.Use(requestid.New(requestid.Config{
@@ -98,7 +116,6 @@ func main() {
 	app.Use(middleware.RequestLogger(logger.Log))
 	app.Use(middleware.Timeout(30 * time.Second))
 
-	// Health check
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"status": "ok",
@@ -106,27 +123,38 @@ func main() {
 		})
 	})
 
-	// Auth routes (public)
 	api := app.Group("/api/v1")
+	api.Use(middleware.AuditLogger(logger.Log))
 
 	api.Post("/auth/register", authHandler.Register)
 	api.Post("/auth/login", authHandler.Login)
 	api.Post("/auth/refresh", authHandler.RefreshToken)
 	api.Post("/auth/logout", authHandler.Logout)
 
-	// Protected routes example
+	api.Get("/services", serviceHandler.List)
+	api.Get("/services/:id", serviceHandler.Get)
+
 	protected := api.Group("")
 	protected.Use(authMiddleware.Authenticate())
 	protected.Use(rateLimiter.Limit())
 
-	protected.Get("/me", func(c fiber.Ctx) error {
-		userID := requestctx.GetUserID(c)
-		email := requestctx.GetUserEmail(c)
-		return c.JSON(fiber.Map{
-			"user_id": userID,
-			"email":   email,
-		})
-	})
+	protected.Get("/me", profileHandler.GetProfile)
+	protected.Patch("/me", profileHandler.UpdateProfile)
+
+	protected.Post("/services", serviceHandler.Create)
+	protected.Patch("/services/:id", serviceHandler.Update)
+	protected.Delete("/services/:id", serviceHandler.SetStatus)
+	protected.Get("/my-services", serviceHandler.GetMyServices)
+
+	protected.Post("/bookings", bookingHandler.Create)
+	protected.Get("/bookings/:id", bookingHandler.Get)
+	protected.Get("/my-bookings", bookingHandler.GetMyBookings)
+	protected.Patch("/bookings/:id/accept", bookingHandler.Accept)
+	protected.Patch("/bookings/:id/reject", bookingHandler.Reject)
+	protected.Patch("/bookings/:id/confirm", bookingHandler.Confirm)
+	protected.Patch("/bookings/:id/complete", bookingHandler.Complete)
+	protected.Patch("/bookings/:id/cancel", bookingHandler.Cancel)
+	protected.Post("/upload", uploadHandler.Upload)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 

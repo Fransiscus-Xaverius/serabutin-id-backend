@@ -1,0 +1,283 @@
+package handler
+
+import (
+	"context"
+	"strconv"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
+	"github.com/serabutin/serabutin-id-backend/internal/dto"
+	"github.com/serabutin/serabutin-id-backend/internal/usecase"
+	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
+	"github.com/serabutin/serabutin-id-backend/pkg/requestctx"
+	"github.com/serabutin/serabutin-id-backend/pkg/response"
+	"github.com/serabutin/serabutin-id-backend/pkg/validator"
+)
+
+type BookingHandler struct {
+	bookingUsecase *usecase.BookingUsecase
+	userUsecase    *usecase.ProfileUsecase
+	serviceUsecase *usecase.ServiceUsecase
+}
+
+func NewBookingHandler(
+	bookingUsecase *usecase.BookingUsecase,
+	userUsecase *usecase.ProfileUsecase,
+	serviceUsecase *usecase.ServiceUsecase,
+) *BookingHandler {
+	return &BookingHandler{
+		bookingUsecase: bookingUsecase,
+		userUsecase:    userUsecase,
+		serviceUsecase: serviceUsecase,
+	}
+}
+
+func (h *BookingHandler) Create(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	var req dto.CreateBookingRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_REQUEST", "invalid request body"))
+	}
+
+	if validationErrors := validator.Validate(req); validationErrors != nil {
+		apiErr := apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed")
+		apiErr.Details = validationErrors
+		return apierror.GlobalErrorHandler(c, apiErr)
+	}
+
+	booking, err := h.bookingUsecase.CreateBooking(c.Context(), userID, req)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toBookingResponse(c.Context(), booking)
+	return response.Success(c, fiber.StatusCreated, resp)
+}
+
+func (h *BookingHandler) Get(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
+	}
+
+	booking, err := h.bookingUsecase.GetBooking(c.Context(), userID, uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toBookingResponse(c.Context(), booking)
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *BookingHandler) GetMyBookings(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	role := c.Query("role", "customer")
+
+	filter := repository.BookingFilter{
+		Status: c.Query("status"),
+		Page:   page,
+		Limit:  limit,
+	}
+
+	bookings, total, err := h.bookingUsecase.GetMyBookings(c.Context(), userID, role, filter)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	data := make([]dto.BookingResponse, len(bookings))
+	for i, b := range bookings {
+		data[i] = h.toBookingResponse(c.Context(), b)
+	}
+
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+
+	resp := dto.BookingListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	}
+
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *BookingHandler) Accept(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
+	}
+
+	booking, err := h.bookingUsecase.AcceptBooking(c.Context(), userID, uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toBookingResponse(c.Context(), booking)
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *BookingHandler) Reject(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
+	}
+
+	booking, err := h.bookingUsecase.RejectBooking(c.Context(), userID, uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toBookingResponse(c.Context(), booking)
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *BookingHandler) Confirm(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
+	}
+
+	booking, err := h.bookingUsecase.ConfirmBooking(c.Context(), userID, uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toBookingResponse(c.Context(), booking)
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *BookingHandler) Complete(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
+	}
+
+	booking, err := h.bookingUsecase.CompleteBooking(c.Context(), userID, uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toBookingResponse(c.Context(), booking)
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *BookingHandler) Cancel(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
+	}
+
+	booking, err := h.bookingUsecase.CancelBooking(c.Context(), userID, uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toBookingResponse(c.Context(), booking)
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *BookingHandler) toBookingResponse(ctx context.Context, booking *entity.Booking) dto.BookingResponse {
+	resp := dto.BookingResponse{
+		ID:            booking.ID,
+		ScheduleDate:  booking.ScheduleDate.Format("2006-01-02"),
+		ScheduleTime:  booking.ScheduleTime,
+		Address:       booking.Address,
+		Notes:         booking.Notes,
+		SubTotal:      booking.SubTotal,
+		PlatformFee:   booking.PlatformFee,
+		Total:         booking.Total,
+		PaymentMethod: booking.PaymentMethod,
+		Status:        booking.Status,
+		CreatedAt:     booking.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+
+	customer, _ := h.userUsecase.GetProfile(ctx, booking.CustomerID)
+	if customer != nil {
+		resp.Customer = &dto.BookingUserInfo{
+			ID:   customer.ID,
+			Name: customer.Name,
+		}
+	}
+
+	service, _ := h.serviceUsecase.GetService(ctx, booking.ServiceID)
+	if service != nil {
+		resp.Service = &dto.BookingServiceInfo{
+			ID:    service.ID,
+			Title: service.Title,
+		}
+	}
+
+	provider, _ := h.userUsecase.GetProfile(ctx, booking.ProviderID)
+	if provider != nil {
+		resp.Provider = &dto.BookingUserInfo{
+			ID:   provider.ID,
+			Name: provider.Name,
+		}
+	}
+
+	for _, addon := range booking.BookingAddOns {
+		resp.AddOns = append(resp.AddOns, dto.BookingAddOnResponse{
+			Name:  addon.Name,
+			Price: addon.Price,
+		})
+	}
+
+	return resp
+}

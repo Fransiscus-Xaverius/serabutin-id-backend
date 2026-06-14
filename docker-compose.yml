@@ -49,6 +49,11 @@ services:
       ACCESS_TOKEN_DURATION_MINUTES: 15
       REFRESH_TOKEN_DURATION_HOURS: 168
       BCRYPT_COST: 4
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_PATH: ./uploads
+      STORAGE_LOCAL_URL: /uploads
+    volumes:
+      - ./uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy

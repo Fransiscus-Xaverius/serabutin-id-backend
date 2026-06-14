@@ -10,6 +10,7 @@ import (
 	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
 	"github.com/serabutin/serabutin-id-backend/pkg/response"
 	"github.com/serabutin/serabutin-id-backend/pkg/validator"
+	"github.com/serabutin/serabutin-id-backend/pkg/whatsapp"
 )
 
 type AuthHandler struct {
@@ -35,7 +36,9 @@ func (h *AuthHandler) Register(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apiErr)
 	}
 
-	td, user, err := h.authUsecase.Register(c.Context(), req.Email, req.Password, req.Name, req.WhatsApp, req.Role)
+	normalizedWA := whatsapp.Normalize(req.WhatsApp)
+
+	td, user, err := h.authUsecase.Register(c.Context(), req.Email, req.Password, req.Name, normalizedWA, req.Role)
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
@@ -45,11 +48,19 @@ func (h *AuthHandler) Register(c fiber.Ctx) error {
 		RefreshToken: td.RefreshToken,
 		ExpiresIn:    int64(time.Until(td.AtExpires).Seconds()),
 		User: dto.UserResponse{
-			ID:       user.ID,
-			Email:    user.Email,
-			Name:     user.Name,
-			WhatsApp: user.WhatsApp,
-			Role:     user.Role,
+			ID:           user.ID,
+			Email:        user.Email,
+			Name:         user.Name,
+			WhatsApp:     user.WhatsApp,
+			Role:         user.Role,
+			Bio:          user.Bio,
+			AvatarURL:    user.AvatarURL,
+			Address:      user.Address,
+			City:         user.City,
+			Province:     user.Province,
+			Skills:       user.Skills,
+			ServiceAreas: user.ServiceAreas,
+			CreatedAt:    user.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		},
 	}
 
@@ -69,7 +80,12 @@ func (h *AuthHandler) Login(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apiErr)
 	}
 
-	td, user, err := h.authUsecase.Login(c.Context(), req.Identifier, req.Password)
+	identifier := req.Identifier
+	if !strings.Contains(identifier, "@") && whatsapp.Validate(identifier) {
+		identifier = whatsapp.Normalize(identifier)
+	}
+
+	td, user, err := h.authUsecase.Login(c.Context(), identifier, req.Password)
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
@@ -79,11 +95,19 @@ func (h *AuthHandler) Login(c fiber.Ctx) error {
 		RefreshToken: td.RefreshToken,
 		ExpiresIn:    int64(time.Until(td.AtExpires).Seconds()),
 		User: dto.UserResponse{
-			ID:       user.ID,
-			Email:    user.Email,
-			Name:     user.Name,
-			WhatsApp: user.WhatsApp,
-			Role:     user.Role,
+			ID:           user.ID,
+			Email:        user.Email,
+			Name:         user.Name,
+			WhatsApp:     user.WhatsApp,
+			Role:         user.Role,
+			Bio:          user.Bio,
+			AvatarURL:    user.AvatarURL,
+			Address:      user.Address,
+			City:         user.City,
+			Province:     user.Province,
+			Skills:       user.Skills,
+			ServiceAreas: user.ServiceAreas,
+			CreatedAt:    user.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		},
 	}
 

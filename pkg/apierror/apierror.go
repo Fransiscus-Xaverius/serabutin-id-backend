@@ -34,6 +34,10 @@ func FromDomainError(err error) *APIError {
 		switch {
 		case errors.Is(domainErr.Unwrap(), apperror.ErrNotFound):
 			return NewAPIError(fiber.StatusNotFound, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrServiceNotFound):
+			return NewAPIError(fiber.StatusNotFound, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrBookingNotFound):
+			return NewAPIError(fiber.StatusNotFound, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrDuplicateEmail):
 			return NewAPIError(fiber.StatusConflict, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrInvalidCredentials):
@@ -48,7 +52,15 @@ func FromDomainError(err error) *APIError {
 			return NewAPIError(fiber.StatusUnauthorized, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrForbidden):
 			return NewAPIError(fiber.StatusForbidden, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrNotServiceOwner):
+			return NewAPIError(fiber.StatusForbidden, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrNotBookingParticipant):
+			return NewAPIError(fiber.StatusForbidden, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrValidation):
+			return NewAPIError(fiber.StatusBadRequest, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrServiceInactive):
+			return NewAPIError(fiber.StatusBadRequest, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrInvalidTransition):
 			return NewAPIError(fiber.StatusBadRequest, domainErr.Code, domainErr.Message)
 		default:
 			return NewAPIError(fiber.StatusInternalServerError, "INTERNAL_ERROR", "an unexpected error occurred")

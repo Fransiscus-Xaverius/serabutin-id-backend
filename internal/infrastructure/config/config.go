@@ -26,6 +26,19 @@ type Config struct {
 	BcryptCost          int
 	LoginMaxAttempts    int
 	LoginLockoutMinutes int
+
+	PlatformFee int64
+
+	StorageDriver      string
+	StorageLocalPath   string
+	StorageLocalURL    string
+	StorageS3Endpoint  string
+	StorageS3Bucket    string
+	StorageS3Region    string
+	StorageS3AccessKey string
+	StorageS3SecretKey string
+	StorageS3UseSSL    bool
+	StorageS3URLPrefix string
 }
 
 func Load() (*Config, error) {
@@ -51,6 +64,13 @@ func Load() (*Config, error) {
 	viper.SetDefault("LOGIN_MAX_ATTEMPTS", 5)
 	viper.SetDefault("LOGIN_LOCKOUT_MINUTES", 15)
 
+	viper.SetDefault("PLATFORM_FEE", 5000)
+
+	viper.SetDefault("STORAGE_DRIVER", "local")
+	viper.SetDefault("STORAGE_LOCAL_PATH", "./uploads")
+	viper.SetDefault("STORAGE_LOCAL_URL", "/uploads")
+	viper.SetDefault("STORAGE_S3_USE_SSL", true)
+
 	var cfg Config
 
 	err := viper.Unmarshal(&cfg)
@@ -72,6 +92,18 @@ func Load() (*Config, error) {
 	cfg.BcryptCost = viper.GetInt("BCRYPT_COST")
 	cfg.LoginMaxAttempts = viper.GetInt("LOGIN_MAX_ATTEMPTS")
 	cfg.LoginLockoutMinutes = viper.GetInt("LOGIN_LOCKOUT_MINUTES")
+	cfg.PlatformFee = viper.GetInt64("PLATFORM_FEE")
+
+	cfg.StorageDriver = viper.GetString("STORAGE_DRIVER")
+	cfg.StorageLocalPath = viper.GetString("STORAGE_LOCAL_PATH")
+	cfg.StorageLocalURL = viper.GetString("STORAGE_LOCAL_URL")
+	cfg.StorageS3Endpoint = viper.GetString("STORAGE_S3_ENDPOINT")
+	cfg.StorageS3Bucket = viper.GetString("STORAGE_S3_BUCKET")
+	cfg.StorageS3Region = viper.GetString("STORAGE_S3_REGION")
+	cfg.StorageS3AccessKey = viper.GetString("STORAGE_S3_ACCESS_KEY")
+	cfg.StorageS3SecretKey = viper.GetString("STORAGE_S3_SECRET_KEY")
+	cfg.StorageS3UseSSL = viper.GetBool("STORAGE_S3_USE_SSL")
+	cfg.StorageS3URLPrefix = viper.GetString("STORAGE_S3_URL_PREFIX")
 
 	return &cfg, nil
 }

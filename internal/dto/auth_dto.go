@@ -4,7 +4,7 @@ type RegisterRequest struct {
 	Email    string `json:"email" validate:"required,email"`
 	Password string `json:"password" validate:"required,min=8"`
 	Name     string `json:"name" validate:"required,min=2,max=100"`
-	WhatsApp string `json:"whatsapp" validate:"required,numeric"`
+	WhatsApp string `json:"whatsapp" validate:"required,whatsapp"`
 	Role     string `json:"role" validate:"required,oneof=customer provider"`
 }
 
@@ -29,11 +29,19 @@ type AuthResponse struct {
 }
 
 type UserResponse struct {
-	ID       uint   `json:"id"`
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	WhatsApp string `json:"whatsapp"`
-	Role     string `json:"role"`
+	ID           uint   `json:"id"`
+	Email        string `json:"email"`
+	Name         string `json:"name"`
+	WhatsApp     string `json:"whatsapp"`
+	Role         string `json:"role"`
+	Bio          string `json:"bio,omitempty"`
+	AvatarURL    string `json:"avatar_url,omitempty"`
+	Address      string `json:"address,omitempty"`
+	City         string `json:"city,omitempty"`
+	Province     string `json:"province,omitempty"`
+	Skills       string `json:"skills,omitempty"`
+	ServiceAreas string `json:"service_areas,omitempty"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type MessageResponse struct {

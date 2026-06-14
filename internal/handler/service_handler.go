@@ -1,0 +1,273 @@
+package handler
+
+import (
+	"context"
+	"strconv"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
+	"github.com/serabutin/serabutin-id-backend/internal/dto"
+	"github.com/serabutin/serabutin-id-backend/internal/usecase"
+	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
+	"github.com/serabutin/serabutin-id-backend/pkg/requestctx"
+	"github.com/serabutin/serabutin-id-backend/pkg/response"
+	"github.com/serabutin/serabutin-id-backend/pkg/validator"
+)
+
+type ServiceHandler struct {
+	serviceUsecase *usecase.ServiceUsecase
+	userUsecase    *usecase.ProfileUsecase
+}
+
+func NewServiceHandler(serviceUsecase *usecase.ServiceUsecase, userUsecase *usecase.ProfileUsecase) *ServiceHandler {
+	return &ServiceHandler{
+		serviceUsecase: serviceUsecase,
+		userUsecase:    userUsecase,
+	}
+}
+
+func (h *ServiceHandler) Create(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	var req dto.CreateServiceRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_REQUEST", "invalid request body"))
+	}
+
+	if validationErrors := validator.Validate(req); validationErrors != nil {
+		apiErr := apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed")
+		apiErr.Details = validationErrors
+		return apierror.GlobalErrorHandler(c, apiErr)
+	}
+
+	service, err := h.serviceUsecase.CreateService(c.Context(), userID, req)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toServiceResponse(c.Context(), service, nil)
+	return response.Success(c, fiber.StatusCreated, resp)
+}
+
+func (h *ServiceHandler) Get(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid service ID"))
+	}
+
+	service, err := h.serviceUsecase.GetService(c.Context(), uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	provider, _ := h.userUsecase.GetProfile(c.Context(), service.ProviderID)
+	var providerInfo *dto.ProviderInfo
+	if provider != nil {
+		providerInfo = &dto.ProviderInfo{
+			ID:        provider.ID,
+			Name:      provider.Name,
+			AvatarURL: provider.AvatarURL,
+			City:      provider.City,
+			Province:  provider.Province,
+		}
+	}
+
+	resp := h.toServiceResponse(c.Context(), service, providerInfo)
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *ServiceHandler) Update(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid service ID"))
+	}
+
+	var req dto.UpdateServiceRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_REQUEST", "invalid request body"))
+	}
+
+	if validationErrors := validator.Validate(req); validationErrors != nil {
+		apiErr := apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed")
+		apiErr.Details = validationErrors
+		return apierror.GlobalErrorHandler(c, apiErr)
+	}
+
+	service, err := h.serviceUsecase.UpdateService(c.Context(), userID, uint(id), req)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toServiceResponse(c.Context(), service, nil)
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *ServiceHandler) List(c fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	minPrice, _ := strconv.ParseInt(c.Query("min_price"), 10, 64)
+	maxPrice, _ := strconv.ParseInt(c.Query("max_price"), 10, 64)
+
+	filter := repository.ServiceFilter{
+		Query:    c.Query("q"),
+		Category: c.Query("category"),
+		City:     c.Query("city"),
+		MinPrice: minPrice,
+		MaxPrice: maxPrice,
+		Sort:     c.Query("sort", "newest"),
+		Page:     page,
+		Limit:    limit,
+	}
+
+	services, total, err := h.serviceUsecase.ListServices(c.Context(), filter)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	data := make([]dto.ServiceResponse, len(services))
+	for i, svc := range services {
+		data[i] = h.toServiceResponse(c.Context(), svc, nil)
+	}
+
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+
+	resp := dto.ServiceListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	}
+
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *ServiceHandler) GetMyServices(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	filter := repository.ServiceFilter{
+		Query:    c.Query("q"),
+		Category: c.Query("category"),
+		Page:     page,
+		Limit:    limit,
+	}
+
+	services, total, err := h.serviceUsecase.GetMyServices(c.Context(), userID, filter)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	data := make([]dto.ServiceResponse, len(services))
+	for i, svc := range services {
+		data[i] = h.toServiceResponse(c.Context(), svc, nil)
+	}
+
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+
+	resp := dto.ServiceListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	}
+
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *ServiceHandler) SetStatus(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid service ID"))
+	}
+
+	if err := h.serviceUsecase.SetServiceStatus(c.Context(), userID, uint(id), "inactive"); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	return response.SuccessMessage(c, fiber.StatusOK, "service deactivated successfully")
+}
+
+func (h *ServiceHandler) toServiceResponse(_ context.Context, service *entity.Service, provider *dto.ProviderInfo) dto.ServiceResponse {
+	resp := dto.ServiceResponse{
+		ID:              service.ID,
+		Provider:        provider,
+		Title:           service.Title,
+		Category:        service.Category,
+		Description:     service.Description,
+		UnitType:        service.UnitType,
+		BasePrice:       service.BasePrice,
+		DurationMinutes: service.DurationMinutes,
+		ServiceAreas:    service.ServiceAreas,
+		Status:          service.Status,
+		CreatedAt:       service.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:       service.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+
+	for _, img := range service.Images {
+		resp.Images = append(resp.Images, dto.ServiceImageResponse{
+			ID:        img.ID,
+			URL:       img.URL,
+			SortOrder: img.SortOrder,
+		})
+	}
+
+	for _, addon := range service.AddOns {
+		resp.AddOns = append(resp.AddOns, dto.ServiceAddOnResponse{
+			ID:    addon.ID,
+			Name:  addon.Name,
+			Price: addon.Price,
+		})
+	}
+
+	return resp
+}

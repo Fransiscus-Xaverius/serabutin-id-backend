@@ -20,12 +20,19 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 
 func (r *UserRepository) Create(ctx context.Context, user *entity.User) error {
 	m := &model.UserModel{
-		Email:     user.Email,
-		Password:  user.Password,
-		Name:      user.Name,
-		WhatsApp:  user.WhatsApp,
-		Role:      user.Role,
-		ConsentAt: user.ConsentAt,
+		Email:        user.Email,
+		Password:     user.Password,
+		Name:         user.Name,
+		WhatsApp:     user.WhatsApp,
+		Role:         user.Role,
+		Bio:          user.Bio,
+		AvatarURL:    user.AvatarURL,
+		Address:      user.Address,
+		City:         user.City,
+		Province:     user.Province,
+		Skills:       user.Skills,
+		ServiceAreas: user.ServiceAreas,
+		ConsentAt:    user.ConsentAt,
 	}
 
 	if err := r.db.WithContext(ctx).Create(m).Error; err != nil {
@@ -37,6 +44,37 @@ func (r *UserRepository) Create(ctx context.Context, user *entity.User) error {
 
 	user.ID = m.ID
 	user.CreatedAt = m.CreatedAt
+	user.UpdatedAt = m.UpdatedAt
+
+	return nil
+}
+
+func (r *UserRepository) Update(ctx context.Context, user *entity.User) error {
+	m := &model.UserModel{
+		ID:           user.ID,
+		Email:        user.Email,
+		Password:     user.Password,
+		Name:         user.Name,
+		WhatsApp:     user.WhatsApp,
+		Role:         user.Role,
+		Bio:          user.Bio,
+		AvatarURL:    user.AvatarURL,
+		Address:      user.Address,
+		City:         user.City,
+		Province:     user.Province,
+		Skills:       user.Skills,
+		ServiceAreas: user.ServiceAreas,
+		ConsentAt:    user.ConsentAt,
+	}
+
+	result := r.db.WithContext(ctx).Save(m)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
+			return apperror.NewDomainError(apperror.ErrDuplicateEmail, "DUPLICATE", "duplicate entry")
+		}
+		return apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", result.Error.Error())
+	}
+
 	user.UpdatedAt = m.UpdatedAt
 
 	return nil
@@ -97,14 +135,21 @@ func (r *UserRepository) ExistsByEmail(ctx context.Context, email string) (bool,
 
 func (r *UserRepository) toEntity(m *model.UserModel) *entity.User {
 	return &entity.User{
-		ID:        m.ID,
-		Email:     m.Email,
-		Password:  m.Password,
-		Name:      m.Name,
-		WhatsApp:  m.WhatsApp,
-		Role:      m.Role,
-		ConsentAt: m.ConsentAt,
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
+		ID:           m.ID,
+		Email:        m.Email,
+		Password:     m.Password,
+		Name:         m.Name,
+		WhatsApp:     m.WhatsApp,
+		Role:         m.Role,
+		Bio:          m.Bio,
+		AvatarURL:    m.AvatarURL,
+		Address:      m.Address,
+		City:         m.City,
+		Province:     m.Province,
+		Skills:       m.Skills,
+		ServiceAreas: m.ServiceAreas,
+		ConsentAt:    m.ConsentAt,
+		CreatedAt:    m.CreatedAt,
+		UpdatedAt:    m.UpdatedAt,
 	}
 }

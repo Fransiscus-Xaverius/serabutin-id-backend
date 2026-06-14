@@ -54,6 +54,11 @@ func (m *MockUserRepository) FindByWhatsApp(ctx context.Context, whatsapp string
 	return args.Get(0).(*entity.User), args.Error(1)
 }
 
+func (m *MockUserRepository) Update(ctx context.Context, user *entity.User) error {
+	args := m.Called(ctx, user)
+	return args.Error(0)
+}
+
 type MockTokenRepository struct {
 	mock.Mock
 }
