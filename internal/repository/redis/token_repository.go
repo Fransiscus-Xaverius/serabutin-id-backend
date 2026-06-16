@@ -144,15 +144,11 @@ func (r *TokenRepository) StoreTokenPair(ctx context.Context, td *entity.TokenDe
 
 	refreshKey := fmt.Sprintf("%s%s", refreshTokenPrefix, td.RefreshUUID)
 	userKey := fmt.Sprintf("%s%d", userTokensPrefix, userID)
-	atKey := fmt.Sprintf("%s%s", accessBlacklistPrefix, td.AccessUUID)
-
 	rtTTL := time.Until(td.RtExpires)
-	atTTL := time.Until(td.AtExpires)
 
 	pipe.Set(ctx, refreshKey, userID, rtTTL)
 	pipe.SAdd(ctx, userKey, td.RefreshUUID)
 	pipe.Expire(ctx, userKey, rtTTL)
-	pipe.Set(ctx, atKey, "active", atTTL)
 
 	_, err := pipe.Exec(ctx)
 	if err != nil {
