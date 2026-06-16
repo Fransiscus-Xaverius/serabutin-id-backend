@@ -49,6 +49,8 @@ type ServiceResponse struct {
 	AddOns          []ServiceAddOnResponse  `json:"add_ons"`
 	ServiceAreas    string                  `json:"service_areas"`
 	Status          string                  `json:"status"`
+	Rating          float64                 `json:"rating"`
+	ReviewCount     int64                   `json:"review_count"`
 	CreatedAt       string                  `json:"created_at"`
 	UpdatedAt       string                  `json:"updated_at,omitempty"`
 }

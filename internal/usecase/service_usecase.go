@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"log"
+	"sync"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
@@ -26,12 +27,14 @@ var validCategories = map[string]bool{
 type ServiceUsecase struct {
 	serviceRepo repository.ServiceRepository
 	userRepo    repository.UserRepository
+	reviewRepo  repository.ReviewRepository
 }
 
-func NewServiceUsecase(serviceRepo repository.ServiceRepository, userRepo repository.UserRepository) *ServiceUsecase {
+func NewServiceUsecase(serviceRepo repository.ServiceRepository, userRepo repository.UserRepository, reviewRepo repository.ReviewRepository) *ServiceUsecase {
 	return &ServiceUsecase{
 		serviceRepo: serviceRepo,
 		userRepo:    userRepo,
+		reviewRepo:  reviewRepo,
 	}
 }
 
@@ -188,4 +191,41 @@ func (uc *ServiceUsecase) SetServiceStatus(ctx context.Context, providerID uint,
 	}
 
 	return nil
+}
+
+func (uc *ServiceUsecase) GetReviewStats(ctx context.Context, serviceID uint) *repository.ServiceReviewStats {
+	stats, err := uc.reviewRepo.GetServiceStats(ctx, serviceID)
+	if err != nil {
+		log.Printf("[ServiceUsecase.GetReviewStats] stats error: %v", err)
+		return &repository.ServiceReviewStats{}
+	}
+	return stats
+}
+
+func (uc *ServiceUsecase) GetReviewStatsMap(ctx context.Context, serviceIDs []uint) map[uint]*repository.ServiceReviewStats {
+	result := make(map[uint]*repository.ServiceReviewStats)
+	if len(serviceIDs) == 0 {
+		return result
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, id := range serviceIDs {
+		wg.Add(1)
+		go func(sid uint) {
+			defer wg.Done()
+			stats, err := uc.reviewRepo.GetServiceStats(ctx, sid)
+			if err != nil {
+				log.Printf("[ServiceUsecase.GetReviewStatsMap] stats error for service %d: %v", sid, err)
+				stats = &repository.ServiceReviewStats{}
+			}
+			mu.Lock()
+			result[sid] = stats
+			mu.Unlock()
+		}(id)
+	}
+
+	wg.Wait()
+	return result
 }

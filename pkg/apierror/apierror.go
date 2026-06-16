@@ -62,6 +62,12 @@ func FromDomainError(err error) *APIError {
 			return NewAPIError(fiber.StatusBadRequest, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrInvalidTransition):
 			return NewAPIError(fiber.StatusBadRequest, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrReviewAlreadyExists):
+			return NewAPIError(fiber.StatusConflict, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrBookingNotCompleted):
+			return NewAPIError(fiber.StatusBadRequest, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrNotBookingOwner):
+			return NewAPIError(fiber.StatusForbidden, domainErr.Code, domainErr.Message)
 		default:
 			return NewAPIError(fiber.StatusInternalServerError, "INTERNAL_ERROR", "an unexpected error occurred")
 		}

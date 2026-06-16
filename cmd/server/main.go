@@ -55,7 +55,7 @@ func main() {
 		logger.Log.Fatal().Err(err).Msg("failed to connect to redis")
 	}
 
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	logger.Log.Info().Msg("database migrated successfully")
@@ -63,6 +63,7 @@ func main() {
 	userRepo := gormrepo.NewUserRepository(db)
 	serviceRepo := gormrepo.NewServiceRepository(db)
 	bookingRepo := gormrepo.NewBookingRepository(db)
+	reviewRepo := gormrepo.NewReviewRepository(db)
 	tokenRepo := redisrepo.NewTokenRepository(redisClient)
 	tokenService := service.NewTokenService(cfg.JWTSecret, cfg.JWTRefreshSecret, cfg.AccessTokenDuration, cfg.RefreshTokenDuration)
 	loginLimiter := service.NewLoginLimiter(redisClient, cfg.LoginMaxAttempts, time.Duration(cfg.LoginLockoutMinutes)*time.Minute)
@@ -71,10 +72,12 @@ func main() {
 	authHandler := handler.NewAuthHandler(authUsecase)
 	profileUsecase := usecase.NewProfileUsecase(userRepo)
 	profileHandler := handler.NewProfileHandler(profileUsecase)
-	serviceUsecase := usecase.NewServiceUsecase(serviceRepo, userRepo)
+	serviceUsecase := usecase.NewServiceUsecase(serviceRepo, userRepo, reviewRepo)
 	serviceHandler := handler.NewServiceHandler(serviceUsecase, profileUsecase)
 	bookingUsecase := usecase.NewBookingUsecase(bookingRepo, serviceRepo, userRepo, cfg.PlatformFee)
 	bookingHandler := handler.NewBookingHandler(bookingUsecase, profileUsecase, serviceUsecase)
+	reviewUsecase := usecase.NewReviewUsecase(reviewRepo, bookingRepo, userRepo)
+	reviewHandler := handler.NewReviewHandler(reviewUsecase, profileUsecase)
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
 	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)
 
@@ -133,6 +136,8 @@ func main() {
 
 	api.Get("/services", serviceHandler.List)
 	api.Get("/services/:id", serviceHandler.Get)
+	api.Get("/services/:id/reviews", reviewHandler.GetServiceReviews)
+	api.Get("/providers/:id/reviews", reviewHandler.GetProviderReviews)
 
 	protected := api.Group("")
 	protected.Use(authMiddleware.Authenticate())
@@ -154,6 +159,7 @@ func main() {
 	protected.Patch("/bookings/:id/confirm", bookingHandler.Confirm)
 	protected.Patch("/bookings/:id/complete", bookingHandler.Complete)
 	protected.Patch("/bookings/:id/cancel", bookingHandler.Cancel)
+	protected.Post("/reviews", reviewHandler.Create)
 	protected.Post("/upload", uploadHandler.Upload)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")

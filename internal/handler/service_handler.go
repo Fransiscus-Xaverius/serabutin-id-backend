@@ -49,7 +49,7 @@ func (h *ServiceHandler) Create(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
-	resp := h.toServiceResponse(c.Context(), service, nil)
+	resp := h.toServiceResponse(c.Context(), service, nil, nil)
 	return response.Success(c, fiber.StatusCreated, resp)
 }
 
@@ -76,7 +76,8 @@ func (h *ServiceHandler) Get(c fiber.Ctx) error {
 		}
 	}
 
-	resp := h.toServiceResponse(c.Context(), service, providerInfo)
+	stats := h.serviceUsecase.GetReviewStats(c.Context(), service.ID)
+	resp := h.toServiceResponse(c.Context(), service, providerInfo, stats)
 	return response.Success(c, fiber.StatusOK, resp)
 }
 
@@ -107,7 +108,7 @@ func (h *ServiceHandler) Update(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
-	resp := h.toServiceResponse(c.Context(), service, nil)
+	resp := h.toServiceResponse(c.Context(), service, nil, nil)
 	return response.Success(c, fiber.StatusOK, resp)
 }
 
@@ -143,9 +144,15 @@ func (h *ServiceHandler) List(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
+	serviceIDs := make([]uint, len(services))
+	for i, svc := range services {
+		serviceIDs[i] = svc.ID
+	}
+	statsMap := h.serviceUsecase.GetReviewStatsMap(c.Context(), serviceIDs)
+
 	data := make([]dto.ServiceResponse, len(services))
 	for i, svc := range services {
-		data[i] = h.toServiceResponse(c.Context(), svc, nil)
+		data[i] = h.toServiceResponse(c.Context(), svc, nil, statsMap[svc.ID])
 	}
 
 	totalPages := total / int64(limit)
@@ -196,9 +203,15 @@ func (h *ServiceHandler) GetMyServices(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
+	serviceIDs := make([]uint, len(services))
+	for i, svc := range services {
+		serviceIDs[i] = svc.ID
+	}
+	statsMap := h.serviceUsecase.GetReviewStatsMap(c.Context(), serviceIDs)
+
 	data := make([]dto.ServiceResponse, len(services))
 	for i, svc := range services {
-		data[i] = h.toServiceResponse(c.Context(), svc, nil)
+		data[i] = h.toServiceResponse(c.Context(), svc, nil, statsMap[svc.ID])
 	}
 
 	totalPages := total / int64(limit)
@@ -237,7 +250,7 @@ func (h *ServiceHandler) SetStatus(c fiber.Ctx) error {
 	return response.SuccessMessage(c, fiber.StatusOK, "service deactivated successfully")
 }
 
-func (h *ServiceHandler) toServiceResponse(_ context.Context, service *entity.Service, provider *dto.ProviderInfo) dto.ServiceResponse {
+func (h *ServiceHandler) toServiceResponse(_ context.Context, service *entity.Service, provider *dto.ProviderInfo, stats *repository.ServiceReviewStats) dto.ServiceResponse {
 	resp := dto.ServiceResponse{
 		ID:              service.ID,
 		Provider:        provider,
@@ -251,6 +264,11 @@ func (h *ServiceHandler) toServiceResponse(_ context.Context, service *entity.Se
 		Status:          service.Status,
 		CreatedAt:       service.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:       service.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+
+	if stats != nil {
+		resp.Rating = stats.AverageRating
+		resp.ReviewCount = stats.TotalCount
 	}
 
 	for _, img := range service.Images {
