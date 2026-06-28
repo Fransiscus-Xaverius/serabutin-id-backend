@@ -118,6 +118,7 @@ func (h *AuthHandler) Logout(c fiber.Ctx) error {
 	var req dto.LogoutRequest
 	if err := c.Bind().Body(&req); err != nil {
 		// ignore body parsing errors — we can still logout from the header token
+		_ = err
 	}
 
 	accessToken := extractBearerToken(c.Get("Authorization"))

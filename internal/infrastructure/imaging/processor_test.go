@@ -14,7 +14,9 @@ import (
 func createTestImage(width, height int) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	var buf bytes.Buffer
-	jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90})
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		panic("failed to encode test image: " + err.Error())
+	}
 	return buf.Bytes()
 }
 
