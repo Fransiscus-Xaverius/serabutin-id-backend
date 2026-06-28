@@ -12,9 +12,11 @@ var validate *validator.Validate
 
 func init() {
 	validate = validator.New()
-	validate.RegisterValidation("whatsapp", func(fl validator.FieldLevel) bool {
+	if err := validate.RegisterValidation("whatsapp", func(fl validator.FieldLevel) bool {
 		return whatsapp.Validate(fl.Field().String())
-	})
+	}); err != nil {
+		panic("failed to register whatsapp validation: " + err.Error())
+	}
 }
 
 type ValidationError struct {
