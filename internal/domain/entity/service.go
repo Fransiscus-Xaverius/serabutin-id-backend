@@ -15,6 +15,7 @@ type Service struct {
 	AddOns          []ServiceAddOn
 	ServiceAreas    string
 	Status          string
+	ServiceType     string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }

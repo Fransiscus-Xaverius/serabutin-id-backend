@@ -55,7 +55,7 @@ func main() {
 		logger.Log.Fatal().Err(err).Msg("failed to connect to redis")
 	}
 
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	logger.Log.Info().Msg("database migrated successfully")
@@ -76,6 +76,9 @@ func main() {
 	serviceHandler := handler.NewServiceHandler(serviceUsecase, profileUsecase)
 	bookingUsecase := usecase.NewBookingUsecase(bookingRepo, serviceRepo, userRepo, cfg.PlatformFee)
 	bookingHandler := handler.NewBookingHandler(bookingUsecase, profileUsecase, serviceUsecase)
+	bidRepo := gormrepo.NewBidRepository(db)
+	bidUsecase := usecase.NewBidUsecase(bidRepo, serviceRepo, bookingRepo, userRepo, cfg.PlatformFee)
+	bidHandler := handler.NewBidHandler(bidUsecase, profileUsecase, serviceUsecase)
 	reviewUsecase := usecase.NewReviewUsecase(reviewRepo, bookingRepo, userRepo)
 	reviewHandler := handler.NewReviewHandler(reviewUsecase, profileUsecase)
 	introspectUsecase := usecase.NewIntrospectUsecase(tokenService, tokenRepo)
@@ -160,6 +163,11 @@ func main() {
 	protected.Get("/my-services", serviceHandler.GetMyServices)
 
 	protected.Post("/bookings", bookingHandler.Create)
+	protected.Post("/bids", bidHandler.Create)
+	protected.Get("/bids/my", bidHandler.GetMyBids)
+	protected.Get("/services/:id/bids", bidHandler.GetByService)
+	protected.Patch("/bids/:id/accept", bidHandler.Accept)
+	protected.Patch("/bids/:id/reject", bidHandler.Reject)
 	protected.Get("/bookings/:id", bookingHandler.Get)
 	protected.Get("/my-bookings", bookingHandler.GetMyBookings)
 	protected.Patch("/bookings/:id/accept", bookingHandler.Accept)

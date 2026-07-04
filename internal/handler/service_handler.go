@@ -129,14 +129,15 @@ func (h *ServiceHandler) List(c fiber.Ctx) error {
 	maxPrice, _ := strconv.ParseInt(c.Query("max_price"), 10, 64)
 
 	filter := repository.ServiceFilter{
-		Query:    c.Query("q"),
-		Category: c.Query("category"),
-		City:     c.Query("city"),
-		MinPrice: minPrice,
-		MaxPrice: maxPrice,
-		Sort:     c.Query("sort", "newest"),
-		Page:     page,
-		Limit:    limit,
+		Query:       c.Query("q"),
+		Category:    c.Query("category"),
+		City:        c.Query("city"),
+		MinPrice:    minPrice,
+		MaxPrice:    maxPrice,
+		Sort:        c.Query("sort", "newest"),
+		Page:        page,
+		Limit:       limit,
+		ServiceType: c.Query("service_type"),
 	}
 
 	services, total, err := h.serviceUsecase.ListServices(c.Context(), filter)
