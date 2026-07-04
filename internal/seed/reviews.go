@@ -14,10 +14,7 @@ func generateReviews(bookings []model.BookingModel) []model.ReviewModel {
 	now := time.Now()
 
 	for i, b := range bookings {
-		rating := 3 + rng.Intn(3)
-		if rating > 5 {
-			rating = 5
-		}
+		rating := 1 + rng.Intn(5)
 
 		reviews[i] = model.ReviewModel{
 			BookingID:           b.ID,
@@ -25,12 +22,12 @@ func generateReviews(bookings []model.BookingModel) []model.ReviewModel {
 			CustomerID:          b.CustomerID,
 			ProviderID:          b.ProviderID,
 			Rating:              rating,
-			CommunicationRating: 3 + rng.Intn(3),
-			QualityRating:       3 + rng.Intn(3),
-			ValueRating:         3 + rng.Intn(3),
+			CommunicationRating: 1 + rng.Intn(5),
+			QualityRating:       1 + rng.Intn(5),
+			ValueRating:         1 + rng.Intn(5),
 			Comment:             randomItem(rng, reviewComments),
-			CreatedAt:           now,
-			UpdatedAt:           now,
+			CreatedAt:           now.Add(time.Duration(i) * time.Minute),
+			UpdatedAt:           now.Add(time.Duration(i) * time.Minute),
 		}
 	}
 
@@ -45,7 +42,7 @@ var reviewComments = []string{
 	"Cepat dan rapi. Puas!",
 	"Komunikasi baik, hasil sesuai harapan.",
 	"Agak lambat tapi hasilnya ok.",
-	"Sudah dua kali pakai, selalu满意.",
+	"Sudah dua kali pakai, selalu puas.",
 	"Terima kasih, pelayanan ramah.",
 	"Lumayan, masih bisa ditingkatkan.",
 }

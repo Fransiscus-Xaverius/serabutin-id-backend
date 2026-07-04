@@ -8,7 +8,7 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/repository/model"
 )
 
-func generateBookings(customers []model.UserModel, services []model.ServiceModel) []model.BookingModel {
+func generateBookings(customers []model.UserModel, services []model.ServiceModel, platformFee int64) []model.BookingModel {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	bookings := make([]model.BookingModel, 0, 1000)
 
@@ -38,7 +38,6 @@ func generateBookings(customers []model.UserModel, services []model.ServiceModel
 		}
 
 		subTotal := service.BasePrice + addOnTotal
-		platformFee := int64(5000)
 		total := subTotal + platformFee
 
 		booking := model.BookingModel{
@@ -47,7 +46,7 @@ func generateBookings(customers []model.UserModel, services []model.ServiceModel
 			ProviderID:    service.ProviderID,
 			ScheduleDate:  scheduleDate,
 			ScheduleTime:  scheduleTime,
-			Address:       fmt.Sprintf("Jl. %s No. %d", customer.City, rng.Intn(200)+1),
+			Address:       fmt.Sprintf("Jl. %s No. %d", randomItem(rng, []string{"Merdeka", "Sudirman", "Thamrin", "Gatot Subroto", "Asia Afrika", "Diponegoro", "Ahmad Yani", "Pahlawan", "Kemerdekaan", "Sukarno Hatta"}), rng.Intn(200)+1),
 			Notes:         fmt.Sprintf("Tolong datang tepat waktu. Terima kasih."),
 			SubTotal:      subTotal,
 			PlatformFee:   platformFee,

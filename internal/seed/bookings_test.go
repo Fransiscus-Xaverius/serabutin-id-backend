@@ -20,7 +20,7 @@ func TestGenerateBookings_ReturnsCorrectCount(t *testing.T) {
 		services[i].ProviderID = uint(i%200 + 1)
 		services[i].BasePrice = 100000
 	}
-	bookings := generateBookings(customers, services)
+	bookings := generateBookings(customers, services, int64(5000))
 	assert.Len(t, bookings, 1000)
 }
 
@@ -35,7 +35,7 @@ func TestGenerateBookings_AllCompleted(t *testing.T) {
 		services[i].ProviderID = uint(i%200 + 1)
 		services[i].BasePrice = 100000
 	}
-	bookings := generateBookings(customers, services)
+	bookings := generateBookings(customers, services, int64(5000))
 	for _, b := range bookings {
 		assert.Equal(t, "completed", b.Status)
 	}
