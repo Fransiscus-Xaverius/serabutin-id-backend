@@ -78,6 +78,11 @@ func main() {
 	bookingHandler := handler.NewBookingHandler(bookingUsecase, profileUsecase, serviceUsecase)
 	reviewUsecase := usecase.NewReviewUsecase(reviewRepo, bookingRepo, userRepo)
 	reviewHandler := handler.NewReviewHandler(reviewUsecase, profileUsecase)
+	introspectUsecase := usecase.NewIntrospectUsecase(tokenService, tokenRepo)
+	introspectHandler := handler.NewIntrospectHandler(introspectUsecase)
+	userUsecase := usecase.NewUserUsecase(userRepo)
+	userHandler := handler.NewUserHandler(userUsecase)
+
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
 	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)
 
@@ -133,6 +138,9 @@ func main() {
 	api.Post("/auth/login", authHandler.Login)
 	api.Post("/auth/refresh", authHandler.RefreshToken)
 	api.Post("/auth/logout", authHandler.Logout)
+
+	api.Post("/auth/introspect", introspectHandler.Introspect)
+	api.Get("/users/:id", userHandler.GetPublicProfile)
 
 	api.Get("/services", serviceHandler.List)
 	api.Get("/services/:id", serviceHandler.Get)
