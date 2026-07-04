@@ -1,0 +1,6 @@
+Task 1: complete (commits 2439868..3fc07eb, review clean)
+Task 2: complete (commits 3fc07eb..ba68437, review clean)
+Task 3: complete (commits ba68437..8c0d9c5, review clean)
+Task 4: complete (commits 8c0d9c5..ffc217f, review clean - minor fmt.Sprintf noted)
+Task 5: complete (commits ffc217f..c6ccfc6, review clean - minor notes)
+Task 6: complete (commits c6ccfc6..5e483fd, review clean after fix)
