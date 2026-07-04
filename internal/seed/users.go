@@ -24,7 +24,7 @@ func generateUsers(bcryptCost int) ([]model.UserModel, error) {
 		}
 
 		email := fmt.Sprintf("%s.%s.%d@email.com", firstName, lastName, i)
-		whatsapp := fmt.Sprintf("+628%d%d", randomInt(rng, 100000000, 999999999), randomInt(rng, 10000000, 99999999))[:16]
+		whatsapp := fmt.Sprintf("+628%d", 100000000000000+rng.Int63n(90000000000000))
 
 		hash, err := bcrypt.GenerateFromPassword([]byte("testing123"), bcryptCost)
 		if err != nil {
