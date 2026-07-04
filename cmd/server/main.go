@@ -133,6 +133,7 @@ func main() {
 	api.Post("/auth/login", authHandler.Login)
 	api.Post("/auth/refresh", authHandler.RefreshToken)
 	api.Post("/auth/logout", authHandler.Logout)
+	api.Post("/auth/introspect", authHandler.Introspect)
 
 	api.Get("/services", serviceHandler.List)
 	api.Get("/services/:id", serviceHandler.Get)

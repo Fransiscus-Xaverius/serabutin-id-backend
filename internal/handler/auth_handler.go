@@ -130,6 +130,32 @@ func (h *AuthHandler) Logout(c fiber.Ctx) error {
 	return response.SuccessMessage(c, fiber.StatusOK, "logged out successfully")
 }
 
+func (h *AuthHandler) Introspect(c fiber.Ctx) error {
+	var req dto.IntrospectRequest
+	if err := c.Bind().Body(&req); err != nil {
+		apiErr := apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
+		return apierror.GlobalErrorHandler(c, apiErr)
+	}
+
+	if req.Token == "" {
+		resp := dto.IntrospectResponse{Active: false}
+		return response.Success(c, fiber.StatusOK, resp)
+	}
+
+	user, err := h.authUsecase.Introspect(c.Context(), req.Token)
+	if err != nil {
+		resp := dto.IntrospectResponse{Active: false}
+		return response.Success(c, fiber.StatusOK, resp)
+	}
+
+	resp := dto.IntrospectResponse{
+		Active: true,
+		UserID: user.ID,
+		Email:  user.Email,
+	}
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
 func (h *AuthHandler) RefreshToken(c fiber.Ctx) error {
 	var req dto.RefreshTokenRequest
 	if err := c.Bind().Body(&req); err != nil {
