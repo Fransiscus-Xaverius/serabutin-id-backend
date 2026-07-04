@@ -99,6 +99,38 @@ func (s *TokenService) ValidateRefreshToken(tokenStr string) (uint, string, erro
 	return uint(userIDFloat), refreshUUID, nil
 }
 
+func (s *TokenService) ValidateAccessToken(tokenStr string) (uint, string, string, error) {
+	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(s.accessSecret), nil
+	})
+	if err != nil {
+		return 0, "", "", apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "token is invalid or expired")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return 0, "", "", apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "token is invalid or expired")
+	}
+
+	tokenType, _ := claims["type"].(string)
+	if tokenType != "access" {
+		return 0, "", "", apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "not an access token")
+	}
+
+	userIDFloat, ok := claims["user_id"].(float64)
+	if !ok {
+		return 0, "", "", apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "invalid user ID in token")
+	}
+
+	email, _ := claims["email"].(string)
+	accessUUID, _ := claims["access_uuid"].(string)
+
+	return uint(userIDFloat), email, accessUUID, nil
+}
+
 func (s *TokenService) ExtractAccessUUID(tokenStr string) (string, error) {
 	token, _, err := new(jwt.Parser).ParseUnverified(tokenStr, jwt.MapClaims{})
 	if err != nil {
