@@ -2,7 +2,6 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
-	"github.com/serabutin/serabutin-id-backend/internal/dto"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
 	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
 	"github.com/serabutin/serabutin-id-backend/pkg/response"
@@ -86,5 +85,5 @@ func (h *UploadHandler) Upload(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
-	return response.Success(c, fiber.StatusCreated, dto.UploadResponse{Data: results})
+	return response.Success(c, fiber.StatusCreated, results)
 }

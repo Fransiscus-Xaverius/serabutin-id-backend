@@ -16,12 +16,13 @@ type ServiceRepository interface {
 }
 
 type ServiceFilter struct {
-	Query    string
-	Category string
-	City     string
-	MinPrice int64
-	MaxPrice int64
-	Sort     string
-	Page     int
-	Limit    int
+	Query       string
+	Category    string
+	City        string
+	MinPrice    int64
+	MaxPrice    int64
+	Sort        string
+	Page        int
+	Limit       int
+	ServiceType string
 }

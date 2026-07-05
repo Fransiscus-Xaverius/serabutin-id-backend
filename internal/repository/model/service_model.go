@@ -16,6 +16,7 @@ type ServiceModel struct {
 	BasePrice       int64               `gorm:"not null"`
 	DurationMinutes int                 `gorm:"not null"`
 	ServiceAreas    string              `gorm:"size:500;not null"`
+	ServiceType     string              `gorm:"size:20;default:offered;index;not null"`
 	Status          string              `gorm:"size:20;default:draft;index;not null"`
 	Images          []ServiceImageModel `gorm:"foreignKey:ServiceID"`
 	AddOns          []ServiceAddOnModel `gorm:"foreignKey:ServiceID"`

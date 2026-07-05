@@ -57,6 +57,7 @@ func (uc *ServiceUsecase) CreateService(ctx context.Context, providerID uint, re
 		BasePrice:       req.BasePrice,
 		DurationMinutes: req.DurationMinutes,
 		ServiceAreas:    req.ServiceAreas,
+		ServiceType:     req.ServiceType,
 		Status:          status,
 	}
 

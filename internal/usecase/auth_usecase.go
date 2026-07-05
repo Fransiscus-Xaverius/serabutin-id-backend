@@ -166,31 +166,6 @@ func (uc *AuthUsecase) Logout(ctx context.Context, accessToken, refreshToken str
 	return nil
 }
 
-func (uc *AuthUsecase) Introspect(ctx context.Context, tokenStr string) (*entity.User, error) {
-	claims, err := uc.tokenService.ValidateAccessToken(tokenStr)
-	if err != nil {
-		return nil, err
-	}
-
-	blacklisted, err := uc.tokenRepo.IsAccessTokenBlacklisted(ctx, claims.AccessUUID)
-	if err != nil {
-		return nil, err
-	}
-	if blacklisted {
-		return nil, apperror.NewDomainError(apperror.ErrTokenRevoked, "TOKEN_REVOKED", "token has been revoked")
-	}
-
-	user, err := uc.userRepo.FindByID(ctx, claims.UserID)
-	if err != nil {
-		if errors.Is(err, apperror.ErrNotFound) {
-			return nil, apperror.NewDomainError(apperror.ErrTokenInvalid, "USER_NOT_FOUND", "user no longer exists")
-		}
-		return nil, err
-	}
-
-	return user, nil
-}
-
 func (uc *AuthUsecase) RefreshToken(ctx context.Context, refreshTokenStr string) (*entity.TokenDetails, error) {
 	userID, refreshUUID, err := uc.tokenService.ValidateRefreshToken(refreshTokenStr)
 	if err != nil {

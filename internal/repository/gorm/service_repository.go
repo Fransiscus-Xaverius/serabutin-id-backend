@@ -106,6 +106,9 @@ func (r *ServiceRepository) List(ctx context.Context, filter repository.ServiceF
 	if filter.City != "" {
 		query = query.Joins("JOIN users ON users.id = services.provider_id").Where("users.city = ?", filter.City)
 	}
+	if filter.ServiceType != "" {
+		query = query.Where("service_type = ?", filter.ServiceType)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
@@ -192,6 +195,7 @@ func (r *ServiceRepository) toModel(service *entity.Service) *model.ServiceModel
 		BasePrice:       service.BasePrice,
 		DurationMinutes: service.DurationMinutes,
 		ServiceAreas:    service.ServiceAreas,
+		ServiceType:     service.ServiceType,
 		Status:          service.Status,
 	}
 
@@ -227,6 +231,7 @@ func (r *ServiceRepository) toEntity(m *model.ServiceModel) *entity.Service {
 		BasePrice:       m.BasePrice,
 		DurationMinutes: m.DurationMinutes,
 		ServiceAreas:    m.ServiceAreas,
+		ServiceType:     m.ServiceType,
 		Status:          m.Status,
 		CreatedAt:       m.CreatedAt,
 		UpdatedAt:       m.UpdatedAt,
