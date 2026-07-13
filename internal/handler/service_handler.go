@@ -262,6 +262,7 @@ func (h *ServiceHandler) toServiceResponse(_ context.Context, service *entity.Se
 		BasePrice:       service.BasePrice,
 		DurationMinutes: service.DurationMinutes,
 		ServiceAreas:    service.ServiceAreas,
+		ServiceType:     service.ServiceType,
 		Status:          service.Status,
 		CreatedAt:       service.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:       service.UpdatedAt.Format("2006-01-02T15:04:05Z"),
