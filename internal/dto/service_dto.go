@@ -10,7 +10,7 @@ type CreateServiceRequest struct {
 	Images          []ServiceImageRequest `json:"images" validate:"required,min=1,max=8,dive"`
 	AddOns          []ServiceAddOnRequest `json:"add_ons,omitempty" validate:"omitempty,max=10,dive"`
 	ServiceAreas    string               `json:"service_areas" validate:"required,max=500"`
-	ServiceType     string               `json:"service_type,omitempty" validate:"omitempty,oneof=offered requested"`
+	ServiceType     string               `json:"service_type" validate:"omitempty,oneof=offered requested"`
 	Status          string               `json:"status,omitempty" validate:"omitempty,oneof=draft active inactive"`
 }
 
@@ -24,7 +24,7 @@ type UpdateServiceRequest struct {
 	Images          []ServiceImageRequest `json:"images,omitempty" validate:"omitempty,max=8,dive"`
 	AddOns          []ServiceAddOnRequest `json:"add_ons,omitempty" validate:"omitempty,max=10,dive"`
 	ServiceAreas    string               `json:"service_areas,omitempty" validate:"omitempty,max=500"`
-	ServiceType     string               `json:"service_type,omitempty" validate:"omitempty,oneof=offered requested"`
+	ServiceType     string               `json:"service_type" validate:"omitempty,oneof=offered requested"`
 	Status          string               `json:"status,omitempty" validate:"omitempty,oneof=draft active inactive"`
 }
 

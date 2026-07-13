@@ -33,6 +33,7 @@ jobs:
         run: |
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           IMAGE=ghcr.io/$OWNER/serabutin-backend
-          docker build -t $IMAGE:${{ steps.meta.outputs.tag }} .
-          docker build -t $IMAGE:${{ github.sha }} .
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          docker build --build-arg COMMIT_HASH=$SHORT_SHA -t $IMAGE:${{ steps.meta.outputs.tag }} .
+          docker build --build-arg COMMIT_HASH=$SHORT_SHA -t $IMAGE:$SHORT_SHA .
           docker push $IMAGE --all-tags
