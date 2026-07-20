@@ -14,11 +14,9 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/helmet"
 	"github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
+	staticmiddleware "github.com/gofiber/fiber/v3/middleware/static"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/service"
-	"github.com/serabutin/serabutin-id-backend/internal/repository/model"
-	redisrepo "github.com/serabutin/serabutin-id-backend/internal/repository/redis"
-	gormrepo "github.com/serabutin/serabutin-id-backend/internal/repository/gorm"
 	"github.com/serabutin/serabutin-id-backend/internal/handler"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/config"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/database"
@@ -27,6 +25,10 @@ import (
 	infraredis "github.com/serabutin/serabutin-id-backend/internal/infrastructure/redis"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/storage"
 	"github.com/serabutin/serabutin-id-backend/internal/middleware"
+	gormrepo "github.com/serabutin/serabutin-id-backend/internal/repository/gorm"
+	localrepo "github.com/serabutin/serabutin-id-backend/internal/repository/local"
+	"github.com/serabutin/serabutin-id-backend/internal/repository/model"
+	redisrepo "github.com/serabutin/serabutin-id-backend/internal/repository/redis"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
 	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
 	"github.com/serabutin/serabutin-id-backend/pkg/requestctx"
@@ -60,6 +62,11 @@ func main() {
 	}
 	logger.Log.Info().Msg("database migrated successfully")
 
+	storageRepo, err := storage.NewStorageRepository(cfg)
+	if err != nil {
+		logger.Log.Fatal().Err(err).Msg("failed to create storage repository")
+	}
+
 	userRepo := gormrepo.NewUserRepository(db)
 	serviceRepo := gormrepo.NewServiceRepository(db)
 	bookingRepo := gormrepo.NewBookingRepository(db)
@@ -73,7 +80,7 @@ func main() {
 	profileUsecase := usecase.NewProfileUsecase(userRepo)
 	profileHandler := handler.NewProfileHandler(profileUsecase)
 	serviceUsecase := usecase.NewServiceUsecase(serviceRepo, userRepo, reviewRepo)
-	serviceHandler := handler.NewServiceHandler(serviceUsecase, profileUsecase)
+	serviceHandler := handler.NewServiceHandler(serviceUsecase, profileUsecase, storageRepo)
 	bookingUsecase := usecase.NewBookingUsecase(bookingRepo, serviceRepo, userRepo, cfg.PlatformFee)
 	bookingHandler := handler.NewBookingHandler(bookingUsecase, profileUsecase, serviceUsecase)
 	bidRepo := gormrepo.NewBidRepository(db)
@@ -89,10 +96,6 @@ func main() {
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
 	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)
 
-	storageRepo, err := storage.NewStorageRepository(cfg)
-	if err != nil {
-		logger.Log.Fatal().Err(err).Msg("failed to create storage repository")
-	}
 	imageProcessor := imaging.NewProcessor()
 	uploadUsecase := usecase.NewUploadUsecase(storageRepo, imageProcessor)
 	uploadHandler := handler.NewUploadHandler(uploadUsecase)
@@ -126,6 +129,7 @@ func main() {
 	app.Use(compress.New())
 	app.Use(middleware.RequestLogger(logger.Log))
 	app.Use(middleware.Timeout(30 * time.Second))
+	registerLocalUploads(app, cfg)
 
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{
@@ -204,4 +208,27 @@ func main() {
 	redisClient.Close()
 
 	logger.Log.Info().Msg("server stopped")
+}
+
+func registerLocalUploads(app *fiber.App, cfg *config.Config) {
+	if cfg.StorageDriver != "local" {
+		return
+	}
+
+	publicURL, err := localrepo.ParsePublicURL(cfg.StorageLocalURL)
+	if err != nil {
+		return
+	}
+
+	app.Use(publicURL.Path, staticmiddleware.New(cfg.StorageLocalPath, staticmiddleware.Config{
+		Browse:        false,
+		CacheDuration: -1,
+		ModifyResponse: func(c fiber.Ctx) error {
+			c.Set("Cross-Origin-Resource-Policy", "cross-origin")
+			return nil
+		},
+		NotFoundHandler: func(c fiber.Ctx) error {
+			return c.SendStatus(fiber.StatusNotFound)
+		},
+	}))
 }

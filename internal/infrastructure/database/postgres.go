@@ -11,8 +11,9 @@ import (
 
 func NewPostgresDB(databaseURL string) (*gorm.DB, error) {
 	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{
-		PrepareStmt: true,
-		Logger:      gormlogger.Default.LogMode(gormlogger.Info),
+		PrepareStmt:    true,
+		TranslateError: true,
+		Logger:         gormlogger.Default.LogMode(gormlogger.Info),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database connection: %w", err)
