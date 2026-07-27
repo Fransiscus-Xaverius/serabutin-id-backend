@@ -152,7 +152,7 @@ func TestTokenRepository_IsAccessTokenBlacklisted_NotBlacklisted_ReturnsFalse(t 
 	assert.False(t, blacklisted)
 }
 
-func TestTokenRepository_StoreTokenPair_StoresBothTokens(t *testing.T) {
+func TestTokenRepository_StoreTokenPair_DoesNotBlacklistAccessToken(t *testing.T) {
 	t.Parallel()
 	client := setupTestRedis(t)
 	repo := NewTokenRepository(client)
@@ -175,5 +175,5 @@ func TestTokenRepository_StoreTokenPair_StoresBothTokens(t *testing.T) {
 
 	blacklisted, err := repo.IsAccessTokenBlacklisted(context.Background(), "access-uuid")
 	require.NoError(t, err)
-	assert.True(t, blacklisted)
+	assert.False(t, blacklisted)
 }

@@ -2,6 +2,7 @@ package validator
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/go-playground/validator/v10"
@@ -16,6 +17,15 @@ func init() {
 		return whatsapp.Validate(fl.Field().String())
 	}); err != nil {
 		panic("failed to register whatsapp validation: " + err.Error())
+	}
+	if err := validate.RegisterValidation("http_url", func(fl validator.FieldLevel) bool {
+		parsed, err := url.Parse(fl.Field().String())
+		if err != nil || parsed.Host == "" || parsed.User != nil {
+			return false
+		}
+		return strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")
+	}); err != nil {
+		panic("failed to register HTTP URL validation: " + err.Error())
 	}
 }
 

@@ -3,9 +3,32 @@ name: Backend CI
 on:
   push:
     branches: [main, development]
+  pull_request:
+    branches: [main, development]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test -p 1 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
   build-and-push:
+    if: github.event_name == 'push'
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

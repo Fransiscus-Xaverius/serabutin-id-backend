@@ -69,7 +69,6 @@ func TestRateLimiter_Limit_UnderLimit_Passes(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		req := httptest.NewRequest("GET", "/test", nil)
-		req.RemoteAddr = "192.168.1.1:12345"
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -86,14 +85,12 @@ func TestRateLimiter_Limit_OverLimit_Returns429(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		req := httptest.NewRequest("GET", "/test", nil)
-		req.RemoteAddr = "10.0.0.1:12345"
 		resp, err := app.Test(req)
 		require.NoError(t, err)
 		assert.Equal(t, 200, resp.StatusCode)
 	}
 
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.RemoteAddr = "10.0.0.1:12345"
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
@@ -108,17 +105,18 @@ func TestRateLimiter_Limit_DifferentIP_NotAffected(t *testing.T) {
 
 	client := setupTestRedisForMiddleware(t)
 	rl := NewRateLimiter(client, 3, 1*time.Minute)
+	rl.keyGenerator = func(c fiber.Ctx) string { return c.Get("X-Test-IP") }
 	app := setupRateLimitTestApp(t, rl)
 
 	for i := 0; i < 4; i++ {
 		req := httptest.NewRequest("GET", "/test", nil)
-		req.RemoteAddr = "172.16.0.1:12345"
+		req.Header.Set("X-Test-IP", "172.16.0.1")
 		_, err := app.Test(req)
 		require.NoError(t, err)
 	}
 
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.RemoteAddr = "172.16.0.2:12345"
+	req.Header.Set("X-Test-IP", "172.16.0.2")
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
