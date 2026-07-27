@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -63,7 +64,63 @@ func (uc *BidUsecase) CreateBid(ctx context.Context, providerID uint, req dto.Cr
 		return nil, err
 	}
 
+	// Auto-accept (spec 002): if the bidder's profile has a budget_min
+	// set and the bid price is at or below it, immediately transition
+	// the bid to accepted and create the booking — no human in the loop.
+	if err := uc.maybeAutoAccept(ctx, bid, service); err != nil {
+		// Non-fatal: log and return the bid in its pending state. The
+		// customer can still accept manually.
+		log.Printf("[BidUsecase.CreateBid] auto-accept skipped: %v", err)
+	}
+
 	return bid, nil
+}
+
+func (uc *BidUsecase) maybeAutoAccept(ctx context.Context, bid *entity.Bid, service *entity.Service) error {
+	provider, err := uc.userRepo.FindByID(ctx, bid.ProviderID)
+	if err != nil {
+		return err
+	}
+	if !shouldAutoAccept(bid.Price, provider.BudgetMin, provider.BudgetMax) {
+		return nil
+	}
+	return uc.completeAccept(ctx, bid, service)
+}
+
+// completeAccept transitions a pending bid to accepted and creates the
+// booking in one shot. Shared between the manual AcceptBid path and the
+// auto-accept path in CreateBid. Uses AcceptIfPending for race safety:
+// if a concurrent path already accepted/rejected this bid, we silently
+// skip — the caller already received the bid in pending state and may
+// retry manually.
+func (uc *BidUsecase) completeAccept(ctx context.Context, bid *entity.Bid, service *entity.Service) error {
+	if err := uc.bidRepo.AcceptIfPending(ctx, bid.ID); err != nil {
+		// Race lost: someone else moved the bid off pending. Skip
+		// booking creation; do not propagate the error to the caller.
+		if errors.Is(err, apperror.ErrInvalidTransition) {
+			return nil
+		}
+		return err
+	}
+	if err := uc.bidRepo.RejectOthers(ctx, bid.ServiceID, bid.ID); err != nil {
+		return err
+	}
+	total := bid.Price + uc.platformFee
+	booking := &entity.Booking{
+		CustomerID:    service.ProviderID,
+		ServiceID:     bid.ServiceID,
+		ProviderID:    bid.ProviderID,
+		ScheduleDate:  time.Now().Add(24 * time.Hour),
+		ScheduleTime:  "09:00",
+		Address:       "",
+		Notes:         bid.Notes,
+		SubTotal:      bid.Price,
+		PlatformFee:   uc.platformFee,
+		Total:         total,
+		PaymentMethod: "cash_on_service",
+		Status:        "pending",
+	}
+	return uc.bookingRepo.Create(ctx, booking)
 }
 
 func (uc *BidUsecase) GetBidsForService(ctx context.Context, userID uint, serviceID uint) ([]*entity.Bid, error) {
@@ -113,7 +170,10 @@ func (uc *BidUsecase) AcceptBid(ctx context.Context, userID uint, bidID uint) (*
 		return nil, apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_TRANSITION", "can only accept pending bids")
 	}
 
-	if err := uc.bidRepo.UpdateStatus(ctx, bidID, "accepted"); err != nil {
+	// Race-safe accept: if a concurrent path moved the bid off pending,
+	// AcceptIfPending returns ErrInvalidTransition — propagate that
+	// rather than creating a duplicate booking.
+	if err := uc.bidRepo.AcceptIfPending(ctx, bidID); err != nil {
 		return nil, err
 	}
 

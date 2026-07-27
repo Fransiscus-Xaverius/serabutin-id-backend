@@ -16,6 +16,8 @@ type User struct {
 	Province     string
 	Skills       string
 	ServiceAreas string
+	BudgetMin    *int64
+	BudgetMax    *int64
 	ConsentAt    *time.Time
 	CreatedAt    time.Time
 	UpdatedAt    time.Time

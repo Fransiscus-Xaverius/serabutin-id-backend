@@ -14,6 +14,7 @@ type BidResponse struct {
 	Notes        string            `json:"notes,omitempty"`
 	Status       string            `json:"status"`
 	CreatedAt    string            `json:"created_at"`
+	UpdatedAt    string            `json:"updated_at"`
 	ServiceTitle string            `json:"service_title,omitempty"`
 }
 

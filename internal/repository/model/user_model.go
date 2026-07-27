@@ -20,6 +20,8 @@ type UserModel struct {
 	Province     string         `gorm:"size:100"`
 	Skills       string         `gorm:"size:500"`
 	ServiceAreas string         `gorm:"size:500"`
+	BudgetMin    *int64         `gorm:""`
+	BudgetMax    *int64         `gorm:""`
 	ConsentAt    *time.Time
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
