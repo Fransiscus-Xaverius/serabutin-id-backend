@@ -3,6 +3,7 @@ package gormrepo
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
@@ -89,25 +90,43 @@ func (r *ServiceRepository) List(ctx context.Context, filter repository.ServiceF
 	var models []model.ServiceModel
 	var total int64
 
-	query := r.db.WithContext(ctx).Model(&model.ServiceModel{}).Where("status = ?", "active")
+	query := r.db.WithContext(ctx).Model(&model.ServiceModel{}).Where("services.status = ?", "active")
 
 	if filter.Query != "" {
-		query = query.Where("title ILIKE ? OR description ILIKE ?", "%"+filter.Query+"%", "%"+filter.Query+"%")
+		term := "%" + filter.Query + "%"
+		query = query.Where("(services.title ILIKE ? OR services.description ILIKE ? OR services.category ILIKE ?)", term, term, term)
 	}
 	if filter.Category != "" {
-		query = query.Where("category = ?", filter.Category)
+		query = query.Where("services.category = ?", filter.Category)
 	}
-	if filter.MinPrice > 0 {
-		query = query.Where("base_price >= ?", filter.MinPrice)
+	if filter.MinPriceSet || filter.MinPrice > 0 {
+		query = query.Where("services.base_price >= ?", filter.MinPrice)
 	}
-	if filter.MaxPrice > 0 {
-		query = query.Where("base_price <= ?", filter.MaxPrice)
+	if filter.MaxPriceSet || filter.MaxPrice > 0 {
+		query = query.Where("services.base_price <= ?", filter.MaxPrice)
+	}
+	if len(filter.PriceRanges) > 0 {
+		clauses := make([]string, 0, len(filter.PriceRanges))
+		args := make([]interface{}, 0, len(filter.PriceRanges)*2)
+		for _, priceRange := range filter.PriceRanges {
+			if priceRange.Max == nil {
+				clauses = append(clauses, "services.base_price >= ?")
+				args = append(args, priceRange.Min)
+				continue
+			}
+			clauses = append(clauses, "(services.base_price >= ? AND services.base_price <= ?)")
+			args = append(args, priceRange.Min, *priceRange.Max)
+		}
+		query = query.Where("("+strings.Join(clauses, " OR ")+")", args...)
 	}
 	if filter.City != "" {
-		query = query.Joins("JOIN users ON users.id = services.provider_id").Where("users.city = ?", filter.City)
+		query = query.Where("EXISTS (SELECT 1 FROM unnest(string_to_array(services.service_areas, ',')) AS area WHERE lower(btrim(area)) = lower(btrim(?)))", filter.City)
 	}
 	if filter.ServiceType != "" {
-		query = query.Where("service_type = ?", filter.ServiceType)
+		query = query.Where("services.service_type = ?", filter.ServiceType)
+	}
+	if filter.MinRating > 0 {
+		query = query.Where("COALESCE((SELECT AVG(reviews.rating) FROM reviews WHERE reviews.service_id = services.id), 0) >= ?", filter.MinRating)
 	}
 
 	if err := query.Count(&total).Error; err != nil {
@@ -116,11 +135,11 @@ func (r *ServiceRepository) List(ctx context.Context, filter repository.ServiceF
 
 	switch filter.Sort {
 	case "price_asc":
-		query = query.Order("base_price ASC")
+		query = query.Order("services.base_price ASC").Order("services.id ASC")
 	case "price_desc":
-		query = query.Order("base_price DESC")
+		query = query.Order("services.base_price DESC").Order("services.id ASC")
 	default:
-		query = query.Order("created_at DESC")
+		query = query.Order("services.created_at DESC").Order("services.id DESC")
 	}
 
 	offset := (filter.Page - 1) * filter.Limit
@@ -143,13 +162,13 @@ func (r *ServiceRepository) FindByProviderID(ctx context.Context, providerID uin
 	var models []model.ServiceModel
 	var total int64
 
-	query := r.db.WithContext(ctx).Model(&model.ServiceModel{}).Where("provider_id = ?", providerID)
+	query := r.db.WithContext(ctx).Model(&model.ServiceModel{}).Where("services.provider_id = ?", providerID)
 
 	if filter.Query != "" {
-		query = query.Where("title ILIKE ? OR description ILIKE ?", "%"+filter.Query+"%", "%"+filter.Query+"%")
+		query = query.Where("(services.title ILIKE ? OR services.description ILIKE ?)", "%"+filter.Query+"%", "%"+filter.Query+"%")
 	}
 	if filter.Category != "" {
-		query = query.Where("category = ?", filter.Category)
+		query = query.Where("services.category = ?", filter.Category)
 	}
 
 	if err := query.Count(&total).Error; err != nil {
@@ -162,7 +181,8 @@ func (r *ServiceRepository) FindByProviderID(ctx context.Context, providerID uin
 			return db.Order("sort_order ASC")
 		}).
 		Preload("AddOns").
-		Order("created_at DESC").
+		Order("services.created_at DESC").
+		Order("services.id DESC").
 		Offset(offset).
 		Limit(filter.Limit).
 		Find(&models).Error

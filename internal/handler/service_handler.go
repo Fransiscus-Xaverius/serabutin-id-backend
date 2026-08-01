@@ -2,7 +2,10 @@ package handler
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
@@ -18,12 +21,14 @@ import (
 type ServiceHandler struct {
 	serviceUsecase *usecase.ServiceUsecase
 	userUsecase    *usecase.ProfileUsecase
+	imageResolver  repository.StorageRepository
 }
 
-func NewServiceHandler(serviceUsecase *usecase.ServiceUsecase, userUsecase *usecase.ProfileUsecase) *ServiceHandler {
+func NewServiceHandler(serviceUsecase *usecase.ServiceUsecase, userUsecase *usecase.ProfileUsecase, imageResolver repository.StorageRepository) *ServiceHandler {
 	return &ServiceHandler{
 		serviceUsecase: serviceUsecase,
 		userUsecase:    userUsecase,
+		imageResolver:  imageResolver,
 	}
 }
 
@@ -113,31 +118,9 @@ func (h *ServiceHandler) Update(c fiber.Ctx) error {
 }
 
 func (h *ServiceHandler) List(c fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "20"))
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 {
-		limit = 20
-	}
-	if limit > 50 {
-		limit = 50
-	}
-
-	minPrice, _ := strconv.ParseInt(c.Query("min_price"), 10, 64)
-	maxPrice, _ := strconv.ParseInt(c.Query("max_price"), 10, 64)
-
-	filter := repository.ServiceFilter{
-		Query:       c.Query("q"),
-		Category:    c.Query("category"),
-		City:        c.Query("city"),
-		MinPrice:    minPrice,
-		MaxPrice:    maxPrice,
-		Sort:        c.Query("sort", "newest"),
-		Page:        page,
-		Limit:       limit,
-		ServiceType: c.Query("service_type"),
+	filter, err := parseServiceListFilter(c)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, err)
 	}
 
 	services, total, err := h.serviceUsecase.ListServices(c.Context(), filter)
@@ -156,16 +139,16 @@ func (h *ServiceHandler) List(c fiber.Ctx) error {
 		data[i] = h.toServiceResponse(c.Context(), svc, nil, statsMap[svc.ID])
 	}
 
-	totalPages := total / int64(limit)
-	if total%int64(limit) > 0 {
+	totalPages := total / int64(filter.Limit)
+	if total%int64(filter.Limit) > 0 {
 		totalPages++
 	}
 
 	resp := dto.ServiceListResponse{
 		Data: data,
 		Pagination: dto.PaginationMeta{
-			Page:       page,
-			Limit:      limit,
+			Page:       filter.Page,
+			Limit:      filter.Limit,
 			Total:      total,
 			TotalPages: totalPages,
 		},
@@ -276,7 +259,7 @@ func (h *ServiceHandler) toServiceResponse(_ context.Context, service *entity.Se
 	for _, img := range service.Images {
 		resp.Images = append(resp.Images, dto.ServiceImageResponse{
 			ID:        img.ID,
-			URL:       img.URL,
+			URL:       h.imageResolver.ResolveImageURL(img.URL),
 			SortOrder: img.SortOrder,
 		})
 	}
@@ -290,4 +273,98 @@ func (h *ServiceHandler) toServiceResponse(_ context.Context, service *entity.Se
 	}
 
 	return resp
+}
+
+func parseServiceListFilter(c fiber.Ctx) (repository.ServiceFilter, error) {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	filter := repository.ServiceFilter{
+		Query:       c.Query("q"),
+		Category:    c.Query("category"),
+		City:        c.Query("city"),
+		Sort:        c.Query("sort", "newest"),
+		Page:        page,
+		Limit:       limit,
+		ServiceType: c.Query("service_type"),
+	}
+
+	queryParams := c.Queries()
+	minPriceRaw, hasMinPrice := queryParams["min_price"]
+	maxPriceRaw, hasMaxPrice := queryParams["max_price"]
+	priceRangesRaw, hasPriceRanges := queryParams["price_ranges"]
+	if hasPriceRanges && (hasMinPrice || hasMaxPrice) {
+		return filter, apierror.NewAPIError(fiber.StatusBadRequest, "PRICE_FILTER_CONFLICT", "price_ranges cannot be combined with min_price or max_price")
+	}
+
+	var err error
+	if hasMinPrice {
+		filter.MinPrice, err = parseNonNegativeInt64(minPriceRaw)
+		if err != nil {
+			return filter, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_PRICE_FILTER", "min_price must be a non-negative integer")
+		}
+		filter.MinPriceSet = true
+	}
+	if hasMaxPrice {
+		filter.MaxPrice, err = parseNonNegativeInt64(maxPriceRaw)
+		if err != nil {
+			return filter, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_PRICE_FILTER", "max_price must be a non-negative integer")
+		}
+		filter.MaxPriceSet = true
+	}
+	if hasMinPrice && hasMaxPrice && filter.MinPrice > filter.MaxPrice {
+		return filter, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_PRICE_FILTER", "min_price cannot exceed max_price")
+	}
+
+	if hasPriceRanges {
+		for _, interval := range strings.Split(priceRangesRaw, ",") {
+			bounds := strings.Split(interval, "-")
+			if len(bounds) != 2 || bounds[0] == "" {
+				return filter, invalidPriceRangesError()
+			}
+			minimum, parseErr := parseNonNegativeInt64(bounds[0])
+			if parseErr != nil {
+				return filter, invalidPriceRangesError()
+			}
+			priceRange := repository.PriceRange{Min: minimum}
+			if bounds[1] != "" {
+				maximum, parseErr := parseNonNegativeInt64(bounds[1])
+				if parseErr != nil || minimum > maximum {
+					return filter, invalidPriceRangesError()
+				}
+				priceRange.Max = &maximum
+			}
+			filter.PriceRanges = append(filter.PriceRanges, priceRange)
+		}
+	}
+
+	if minRatingRaw, hasMinRating := queryParams["min_rating"]; hasMinRating {
+		filter.MinRating, err = strconv.ParseFloat(minRatingRaw, 64)
+		if err != nil || math.IsNaN(filter.MinRating) || math.IsInf(filter.MinRating, 0) || filter.MinRating < 1 || filter.MinRating > 5 {
+			return filter, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_MIN_RATING", "min_rating must be between 1 and 5")
+		}
+	}
+
+	return filter, nil
+}
+
+func parseNonNegativeInt64(value string) (int64, error) {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("invalid non-negative integer")
+	}
+	return parsed, nil
+}
+
+func invalidPriceRangesError() error {
+	return apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_PRICE_RANGES", "price_ranges must contain valid inclusive intervals")
 }

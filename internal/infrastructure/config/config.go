@@ -68,7 +68,7 @@ func Load() (*Config, error) {
 
 	viper.SetDefault("STORAGE_DRIVER", "local")
 	viper.SetDefault("STORAGE_LOCAL_PATH", "./uploads")
-	viper.SetDefault("STORAGE_LOCAL_URL", "/uploads")
+	viper.SetDefault("STORAGE_LOCAL_URL", "http://localhost:3000/uploads")
 	viper.SetDefault("STORAGE_S3_USE_SSL", true)
 
 	var cfg Config

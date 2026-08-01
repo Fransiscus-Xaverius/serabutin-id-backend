@@ -39,7 +39,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 
-	db, err := gorm.Open(gormpostgres.Open(connStr), &gorm.Config{})
+	db, err := gorm.Open(gormpostgres.Open(connStr), &gorm.Config{TranslateError: true})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&model.UserModel{}))
 
@@ -76,6 +76,7 @@ func TestUserRepository_Create_DuplicateEmail_ReturnsErrDuplicateEmail(t *testin
 		Email:    "dup@example.com",
 		Password: "password1",
 		Name:     "User One",
+		WhatsApp: "081111111111",
 	}
 	err := repo.Create(context.Background(), user1)
 	require.NoError(t, err)
@@ -84,6 +85,7 @@ func TestUserRepository_Create_DuplicateEmail_ReturnsErrDuplicateEmail(t *testin
 		Email:    "dup@example.com",
 		Password: "password2",
 		Name:     "User Two",
+		WhatsApp: "082222222222",
 	}
 	err = repo.Create(context.Background(), user2)
 

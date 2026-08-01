@@ -21,8 +21,17 @@ type ServiceFilter struct {
 	City        string
 	MinPrice    int64
 	MaxPrice    int64
+	MinPriceSet bool
+	MaxPriceSet bool
 	Sort        string
 	Page        int
 	Limit       int
 	ServiceType string
+	PriceRanges []PriceRange
+	MinRating   float64
+}
+
+type PriceRange struct {
+	Min int64
+	Max *int64
 }

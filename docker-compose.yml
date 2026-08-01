@@ -51,7 +51,7 @@ services:
       BCRYPT_COST: 4
       STORAGE_DRIVER: local
       STORAGE_LOCAL_PATH: ./uploads
-      STORAGE_LOCAL_URL: /uploads
+      STORAGE_LOCAL_URL: ${STORAGE_LOCAL_URL:-http://localhost:3000/uploads}
     volumes:
       - ./uploads:/app/uploads
     depends_on:

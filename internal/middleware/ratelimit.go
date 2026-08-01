@@ -10,9 +10,10 @@ import (
 )
 
 type RateLimiter struct {
-	client *redis.Client
-	limit  int
-	window time.Duration
+	client       *redis.Client
+	limit        int
+	window       time.Duration
+	keyGenerator func(fiber.Ctx) string
 }
 
 func NewRateLimiter(client *redis.Client, limit int, window time.Duration) *RateLimiter {
@@ -20,13 +21,16 @@ func NewRateLimiter(client *redis.Client, limit int, window time.Duration) *Rate
 		client: client,
 		limit:  limit,
 		window: window,
+		keyGenerator: func(c fiber.Ctx) string {
+			return c.IP()
+		},
 	}
 }
 
 func (rl *RateLimiter) Limit() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		ctx := c.Context()
-		ip := c.IP()
+		ip := rl.keyGenerator(c)
 
 		key := fmt.Sprintf("ratelimit:%s", ip)
 
