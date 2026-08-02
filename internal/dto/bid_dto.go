@@ -7,15 +7,20 @@ type CreateBidRequest struct {
 }
 
 type BidResponse struct {
-	ID           uint              `json:"id"`
-	ServiceID    uint              `json:"service_id"`
-	Provider     *BookingUserInfo  `json:"provider,omitempty"`
-	Price        int64             `json:"price"`
-	Notes        string            `json:"notes,omitempty"`
-	Status       string            `json:"status"`
-	CreatedAt    string            `json:"created_at"`
-	UpdatedAt    string            `json:"updated_at"`
-	ServiceTitle string            `json:"service_title,omitempty"`
+	ID                 uint             `json:"id"`
+	ServiceID          uint             `json:"service_id"`
+	Provider           *BookingUserInfo `json:"provider,omitempty"`
+	Price              int64            `json:"price"`
+	Notes              string           `json:"notes,omitempty"`
+	Status             string           `json:"status"`
+	CreatedAt          string           `json:"created_at"`
+	UpdatedAt          string           `json:"updated_at"`
+	ServiceTitle       string           `json:"service_title,omitempty"`
+	ServiceCategory    string           `json:"service_category,omitempty"`
+	ServiceDescription string           `json:"service_description,omitempty"`
+	ServiceLocation    string           `json:"service_location,omitempty"`
+	ServiceImage       string           `json:"service_image,omitempty"`
+	Customer           *BookingUserInfo `json:"customer,omitempty"`
 }
 
 type BidListResponse struct {

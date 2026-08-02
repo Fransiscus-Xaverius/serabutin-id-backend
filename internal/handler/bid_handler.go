@@ -142,6 +142,18 @@ func (h *BidHandler) GetMyBids(c fiber.Ctx) error {
 		}
 		if service != nil {
 			resp.ServiceTitle = service.Title
+			resp.ServiceCategory = service.Category
+			resp.ServiceDescription = service.Description
+			resp.ServiceLocation = service.ServiceAreas
+			if len(service.Images) > 0 {
+				resp.ServiceImage = service.Images[0].URL
+			}
+			if customer, err := h.userUsecase.GetProfile(c.Context(), service.ProviderID); err == nil {
+				resp.Customer = &dto.BookingUserInfo{
+					ID:   customer.ID,
+					Name: customer.Name,
+				}
+			}
 		}
 		data[i] = resp
 	}
