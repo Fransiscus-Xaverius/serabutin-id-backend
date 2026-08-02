@@ -41,6 +41,8 @@ type UserResponse struct {
 	Province     string `json:"province,omitempty"`
 	Skills       string `json:"skills,omitempty"`
 	ServiceAreas string `json:"service_areas,omitempty"`
+	BudgetMin    *int64 `json:"budget_min,omitempty"`
+	BudgetMax    *int64 `json:"budget_max,omitempty"`
 	CreatedAt    string `json:"created_at"`
 }
 

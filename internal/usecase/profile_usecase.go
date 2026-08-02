@@ -54,6 +54,14 @@ func (uc *ProfileUsecase) UpdateProfile(ctx context.Context, userID uint, req dt
 	if req.ServiceAreas != "" {
 		user.ServiceAreas = req.ServiceAreas
 	}
+	// Budget range may be explicitly cleared: nil pointer means "no change",
+	// but a present pointer (even with value 0) means "set to this".
+	if req.BudgetMin != nil {
+		user.BudgetMin = req.BudgetMin
+	}
+	if req.BudgetMax != nil {
+		user.BudgetMax = req.BudgetMax
+	}
 
 	if err := uc.userRepo.Update(ctx, user); err != nil {
 		log.Printf("[ProfileUsecase.UpdateProfile] update user error: %v", err)

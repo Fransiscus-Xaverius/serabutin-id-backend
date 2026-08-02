@@ -32,6 +32,8 @@ func (r *UserRepository) Create(ctx context.Context, user *entity.User) error {
 		Province:     user.Province,
 		Skills:       user.Skills,
 		ServiceAreas: user.ServiceAreas,
+		BudgetMin:    user.BudgetMin,
+		BudgetMax:    user.BudgetMax,
 		ConsentAt:    user.ConsentAt,
 	}
 
@@ -64,6 +66,8 @@ func (r *UserRepository) Update(ctx context.Context, user *entity.User) error {
 		Province:     user.Province,
 		Skills:       user.Skills,
 		ServiceAreas: user.ServiceAreas,
+		BudgetMin:    user.BudgetMin,
+		BudgetMax:    user.BudgetMax,
 		ConsentAt:    user.ConsentAt,
 	}
 
@@ -148,6 +152,8 @@ func (r *UserRepository) toEntity(m *model.UserModel) *entity.User {
 		Province:     m.Province,
 		Skills:       m.Skills,
 		ServiceAreas: m.ServiceAreas,
+		BudgetMin:    m.BudgetMin,
+		BudgetMax:    m.BudgetMax,
 		ConsentAt:    m.ConsentAt,
 		CreatedAt:    m.CreatedAt,
 		UpdatedAt:    m.UpdatedAt,

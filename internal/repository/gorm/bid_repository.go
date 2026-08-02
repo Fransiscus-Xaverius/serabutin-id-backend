@@ -105,6 +105,25 @@ func (r *BidRepository) UpdateStatus(ctx context.Context, id uint, status string
 	return nil
 }
 
+// AcceptIfPending is the race-safe accept transition used by both the
+// manual AcceptBid path and the auto-accept path in CreateBid.
+// The WHERE status='pending' guard makes two concurrent accepts safe:
+// only the first update touches a row; the loser sees 0 rows affected
+// and gets ErrInvalidTransition.
+func (r *BidRepository) AcceptIfPending(ctx context.Context, id uint) error {
+	result := r.db.WithContext(ctx).
+		Model(&model.BidModel{}).
+		Where("id = ? AND status = ?", id, "pending").
+		Update("status", "accepted")
+	if result.Error != nil {
+		return apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", result.Error.Error())
+	}
+	if result.RowsAffected == 0 {
+		return apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_TRANSITION", "can only accept pending bids")
+	}
+	return nil
+}
+
 func (r *BidRepository) RejectOthers(ctx context.Context, serviceID uint, exceptID uint) error {
 	result := r.db.WithContext(ctx).Model(&model.BidModel{}).
 		Where("service_id = ? AND id != ? AND status = ?", serviceID, exceptID, "pending").

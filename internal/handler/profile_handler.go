@@ -43,6 +43,8 @@ func (h *ProfileHandler) GetProfile(c fiber.Ctx) error {
 		Province:     user.Province,
 		Skills:       user.Skills,
 		ServiceAreas: user.ServiceAreas,
+		BudgetMin:    user.BudgetMin,
+		BudgetMax:    user.BudgetMax,
 		CreatedAt:    user.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 
@@ -68,6 +70,11 @@ func (h *ProfileHandler) UpdateProfile(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apiErr)
 	}
 
+	if err := req.Validate(); err != nil {
+		apiErr := apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_BUDGET_RANGE", err.Error())
+		return apierror.GlobalErrorHandler(c, apiErr)
+	}
+
 	user, err := h.profileUsecase.UpdateProfile(c.Context(), userID, req)
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
@@ -86,6 +93,8 @@ func (h *ProfileHandler) UpdateProfile(c fiber.Ctx) error {
 		Province:     user.Province,
 		Skills:       user.Skills,
 		ServiceAreas: user.ServiceAreas,
+		BudgetMin:    user.BudgetMin,
+		BudgetMax:    user.BudgetMax,
 		CreatedAt:    user.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 

@@ -56,6 +56,7 @@ func (h *BidHandler) Create(c fiber.Ctx) error {
 		Notes:     bid.Notes,
 		Status:    bid.Status,
 		CreatedAt: bid.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: bid.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 
 	return response.Success(c, fiber.StatusCreated, resp)
@@ -87,6 +88,7 @@ func (h *BidHandler) GetByService(c fiber.Ctx) error {
 			Notes:     bid.Notes,
 			Status:    bid.Status,
 			CreatedAt: bid.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: bid.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 		if provider != nil {
 			resp.Provider = &dto.BookingUserInfo{ID: provider.ID, Name: provider.Name}
@@ -136,6 +138,7 @@ func (h *BidHandler) GetMyBids(c fiber.Ctx) error {
 			Notes:     bid.Notes,
 			Status:    bid.Status,
 			CreatedAt: bid.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: bid.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 		if service != nil {
 			resp.ServiceTitle = service.Title
