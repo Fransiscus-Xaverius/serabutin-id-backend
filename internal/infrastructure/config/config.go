@@ -41,6 +41,24 @@ type Config struct {
 	StorageS3URLPrefix string
 }
 
+const (
+	defaultJWTSecret        = "change-me-in-production"
+	defaultJWTRefreshSecret = "change-me-refresh-in-production"
+)
+
+func ValidateSecrets(environment, jwtSecret, jwtRefreshSecret string) error {
+	if jwtSecret == "" || jwtRefreshSecret == "" {
+		return fmt.Errorf("JWT_SECRET and JWT_REFRESH_SECRET are required")
+	}
+	if environment == "production" && (jwtSecret == defaultJWTSecret || jwtRefreshSecret == defaultJWTRefreshSecret) {
+		return fmt.Errorf("JWT_SECRET and JWT_REFRESH_SECRET must not use default placeholder values in production")
+	}
+	if (jwtSecret != defaultJWTSecret && len(jwtSecret) < 32) || (jwtRefreshSecret != defaultJWTRefreshSecret && len(jwtRefreshSecret) < 32) {
+		return fmt.Errorf("JWT_SECRET and JWT_REFRESH_SECRET must be at least 32 bytes")
+	}
+	return nil
+}
+
 func Load() (*Config, error) {
 	viper.AutomaticEnv()
 
@@ -104,6 +122,10 @@ func Load() (*Config, error) {
 	cfg.StorageS3SecretKey = viper.GetString("STORAGE_S3_SECRET_KEY")
 	cfg.StorageS3UseSSL = viper.GetBool("STORAGE_S3_USE_SSL")
 	cfg.StorageS3URLPrefix = viper.GetString("STORAGE_S3_URL_PREFIX")
+
+	if err := ValidateSecrets(cfg.Environment, cfg.JWTSecret, cfg.JWTRefreshSecret); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
