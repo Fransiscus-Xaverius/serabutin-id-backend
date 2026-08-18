@@ -45,6 +45,8 @@ func TestValidateSecrets(t *testing.T) {
 		{"defaults in dev are allowed", "development", "change-me-in-production", "change-me-refresh-in-production", false},
 		{"defaults in production rejected", "production", "change-me-in-production", "change-me-refresh-in-production", true},
 		{"strong secrets in production", "production", strong, strong, false},
+		{"single empty access", "production", "", "0123456789abcdef0123456789abcdef", true},
+		{"case-insensitive production", "Production", "change-me-in-production", "change-me-refresh-in-production", true},
 	}
 
 	for _, tt := range tests {

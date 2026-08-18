@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -47,14 +48,23 @@ const (
 )
 
 func ValidateSecrets(environment, jwtSecret, jwtRefreshSecret string) error {
-	if jwtSecret == "" || jwtRefreshSecret == "" {
-		return fmt.Errorf("JWT_SECRET and JWT_REFRESH_SECRET are required")
+	if jwtSecret == "" {
+		return fmt.Errorf("JWT_SECRET must not be empty")
 	}
-	if environment == "production" && (jwtSecret == defaultJWTSecret || jwtRefreshSecret == defaultJWTRefreshSecret) {
-		return fmt.Errorf("JWT_SECRET and JWT_REFRESH_SECRET must not use default placeholder values in production")
+	if jwtRefreshSecret == "" {
+		return fmt.Errorf("JWT_REFRESH_SECRET must not be empty")
 	}
-	if (jwtSecret != defaultJWTSecret && len(jwtSecret) < 32) || (jwtRefreshSecret != defaultJWTRefreshSecret && len(jwtRefreshSecret) < 32) {
-		return fmt.Errorf("JWT_SECRET and JWT_REFRESH_SECRET must be at least 32 bytes")
+	if strings.ToLower(environment) == "production" && jwtSecret == defaultJWTSecret {
+		return fmt.Errorf("JWT_SECRET must not use default placeholder value in production")
+	}
+	if strings.ToLower(environment) == "production" && jwtRefreshSecret == defaultJWTRefreshSecret {
+		return fmt.Errorf("JWT_REFRESH_SECRET must not use default placeholder value in production")
+	}
+	if jwtSecret != defaultJWTSecret && len(jwtSecret) < 32 {
+		return fmt.Errorf("JWT_SECRET must be at least 32 bytes")
+	}
+	if jwtRefreshSecret != defaultJWTRefreshSecret && len(jwtRefreshSecret) < 32 {
+		return fmt.Errorf("JWT_REFRESH_SECRET must be at least 32 bytes")
 	}
 	return nil
 }
