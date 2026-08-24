@@ -43,3 +43,72 @@ func TestServiceImageRequest_URLValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateServiceRequest_BudgetValidation(t *testing.T) {
+	base := CreateServiceRequest{ServiceType: "requested"}
+	min, max, auto := int64(10000), int64(20000), int64(15000)
+
+	tests := []struct {
+		name    string
+		request CreateServiceRequest
+		wantErr bool
+	}{
+		{
+			name:    "valid requested budget",
+			request: CreateServiceRequest{ServiceType: "requested", BudgetMin: &min, BudgetMax: &max, AutoAcceptPrice: &auto},
+		},
+		{
+			name:    "missing range",
+			request: base,
+			wantErr: true,
+		},
+		{
+			name:    "minimum exceeds maximum",
+			request: CreateServiceRequest{ServiceType: "requested", BudgetMin: &max, BudgetMax: &min},
+			wantErr: true,
+		},
+		{
+			name:    "auto accept at minimum",
+			request: CreateServiceRequest{ServiceType: "requested", BudgetMin: &min, BudgetMax: &max, AutoAcceptPrice: &min},
+			wantErr: false,
+		},
+		{
+			name: "auto accept below minimum",
+			request: CreateServiceRequest{
+				ServiceType:     "requested",
+				BudgetMin:       &min,
+				BudgetMax:       &max,
+				AutoAcceptPrice: func() *int64 { value := int64(5000); return &value }(),
+			},
+			wantErr: true,
+		},
+		{
+			name: "auto accept above maximum",
+			request: CreateServiceRequest{
+				ServiceType:     "requested",
+				BudgetMin:       &min,
+				BudgetMax:       &max,
+				AutoAcceptPrice: func() *int64 { value := int64(25000); return &value }(),
+			},
+			wantErr: true,
+		},
+		{
+			name:    "offered service does not require customer range",
+			request: CreateServiceRequest{ServiceType: "offered"},
+			wantErr: false,
+		},
+		{
+			name:    "offered service rejects customer range",
+			request: CreateServiceRequest{ServiceType: "offered", BudgetMin: &min, BudgetMax: &max},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.request.Validate(); (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}

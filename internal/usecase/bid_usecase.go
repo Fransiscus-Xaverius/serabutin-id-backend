@@ -67,22 +67,30 @@ func (uc *BidUsecase) CreateBid(ctx context.Context, providerID uint, req dto.Cr
 	// Auto-accept (spec 002): if the bidder's profile has a budget_min
 	// set and the bid price is at or below it, immediately transition
 	// the bid to accepted and create the booking — no human in the loop.
-	if err := uc.maybeAutoAccept(ctx, bid, service); err != nil {
+	accepted, err := uc.maybeAutoAccept(ctx, bid, service)
+	if err != nil {
 		// Non-fatal: log and return the bid in its pending state. The
 		// customer can still accept manually.
 		log.Printf("[BidUsecase.CreateBid] auto-accept skipped: %v", err)
+	}
+	if accepted {
+		bid.Status = "accepted"
 	}
 
 	return bid, nil
 }
 
-func (uc *BidUsecase) maybeAutoAccept(ctx context.Context, bid *entity.Bid, service *entity.Service) error {
+func (uc *BidUsecase) maybeAutoAccept(ctx context.Context, bid *entity.Bid, service *entity.Service) (bool, error) {
+	if service.ServiceType == "requested" && shouldAutoAcceptJob(bid.Price, service.AutoAcceptPrice) {
+		return uc.completeAccept(ctx, bid, service)
+	}
+
 	provider, err := uc.userRepo.FindByID(ctx, bid.ProviderID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !shouldAutoAccept(bid.Price, provider.BudgetMin, provider.BudgetMax) {
-		return nil
+		return false, nil
 	}
 	return uc.completeAccept(ctx, bid, service)
 }
@@ -93,17 +101,17 @@ func (uc *BidUsecase) maybeAutoAccept(ctx context.Context, bid *entity.Bid, serv
 // if a concurrent path already accepted/rejected this bid, we silently
 // skip — the caller already received the bid in pending state and may
 // retry manually.
-func (uc *BidUsecase) completeAccept(ctx context.Context, bid *entity.Bid, service *entity.Service) error {
+func (uc *BidUsecase) completeAccept(ctx context.Context, bid *entity.Bid, service *entity.Service) (bool, error) {
 	if err := uc.bidRepo.AcceptIfPending(ctx, bid.ID); err != nil {
 		// Race lost: someone else moved the bid off pending. Skip
 		// booking creation; do not propagate the error to the caller.
 		if errors.Is(err, apperror.ErrInvalidTransition) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	if err := uc.bidRepo.RejectOthers(ctx, bid.ServiceID, bid.ID); err != nil {
-		return err
+		return false, err
 	}
 	total := bid.Price + uc.platformFee
 	booking := &entity.Booking{
@@ -120,7 +128,10 @@ func (uc *BidUsecase) completeAccept(ctx context.Context, bid *entity.Bid, servi
 		PaymentMethod: "cash_on_service",
 		Status:        "pending",
 	}
-	return uc.bookingRepo.Create(ctx, booking)
+	if err := uc.bookingRepo.Create(ctx, booking); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (uc *BidUsecase) GetBidsForService(ctx context.Context, userID uint, serviceID uint) ([]*entity.Bid, error) {

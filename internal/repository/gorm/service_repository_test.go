@@ -107,4 +107,31 @@ func TestServiceRepository_ListStableOrdering(t *testing.T) {
 	assert.Equal(t, uint(3), page2[0].ID)
 }
 
+func TestServiceRepository_BudgetFieldsRoundTrip(t *testing.T) {
+	db := setupServiceTestDB(t)
+	min, max, auto := int64(100000), int64(250000), int64(150000)
+	require.NoError(t, db.Create(&model.ServiceModel{
+		ID:              1,
+		ProviderID:      1,
+		Title:           "Requested repair",
+		Description:     "Repair a broken water pump",
+		Category:        "handyman",
+		UnitType:        "per_session",
+		BasePrice:       min,
+		BudgetMin:       &min,
+		BudgetMax:       &max,
+		AutoAcceptPrice: &auto,
+		DurationMinutes: 60,
+		ServiceAreas:    "Depok",
+		ServiceType:     "requested",
+		Status:          "active",
+	}).Error)
+
+	service, err := NewServiceRepository(db).FindByID(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Equal(t, min, *service.BudgetMin)
+	assert.Equal(t, max, *service.BudgetMax)
+	assert.Equal(t, auto, *service.AutoAcceptPrice)
+}
+
 func int64Pointer(value int64) *int64 { return &value }

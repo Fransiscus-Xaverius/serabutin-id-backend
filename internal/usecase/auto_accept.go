@@ -16,3 +16,9 @@ func shouldAutoAccept(bidPrice int64, budgetMin, budgetMax *int64) bool {
 	}
 	return bidPrice <= *budgetMin
 }
+
+// shouldAutoAcceptJob returns true when a customer configured a threshold on
+// a requested service and the bid is at or below that threshold.
+func shouldAutoAcceptJob(bidPrice int64, autoAcceptPrice *int64) bool {
+	return autoAcceptPrice != nil && bidPrice <= *autoAcceptPrice
+}

@@ -10,6 +10,9 @@ type Service struct {
 	Description     string
 	UnitType        string
 	BasePrice       int64
+	BudgetMin       *int64
+	BudgetMax       *int64
+	AutoAcceptPrice *int64
 	DurationMinutes int
 	Images          []ServiceImage
 	AddOns          []ServiceAddOn
