@@ -111,6 +111,8 @@ func TestCreateServiceRequest_BudgetValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
 func TestCreateServiceRequestValidationUsesJSONFieldNames(t *testing.T) {
 	validationErrors := validator.Validate(CreateServiceRequest{
 		Title:           "Home Cleaning",
