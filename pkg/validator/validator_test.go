@@ -52,7 +52,7 @@ func TestValidate_RequiredField_ReturnsFieldError(t *testing.T) {
 	errors := Validate(s)
 	require.Len(t, errors, 1)
 	assert.Equal(t, "email", errors[0].Field)
-	assert.Contains(t, errors[0].Message, "required")
+	assert.Equal(t, "is required", errors[0].Message)
 }
 
 func TestValidate_MinLength_ReturnsFieldError(t *testing.T) {
@@ -67,7 +67,7 @@ func TestValidate_MinLength_ReturnsFieldError(t *testing.T) {
 	errors := Validate(s)
 	require.Len(t, errors, 1)
 	assert.Equal(t, "password", errors[0].Field)
-	assert.Contains(t, errors[0].Message, "min")
+	assert.Equal(t, "must be at least 8 characters", errors[0].Message)
 }
 
 func TestValidate_MultipleErrors_ReturnsAllErrors(t *testing.T) {

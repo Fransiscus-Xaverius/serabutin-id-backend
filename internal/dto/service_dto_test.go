@@ -111,4 +111,23 @@ func TestCreateServiceRequest_BudgetValidation(t *testing.T) {
 			}
 		})
 	}
+func TestCreateServiceRequestValidationUsesJSONFieldNames(t *testing.T) {
+	validationErrors := validator.Validate(CreateServiceRequest{
+		Title:           "Home Cleaning",
+		Category:        "cleaning",
+		Description:     "",
+		UnitType:        "per_session",
+		BasePrice:       10000,
+		DurationMinutes: 60,
+		Images:          []ServiceImageRequest{},
+	})
+
+	fieldMessages := make(map[string]string, len(validationErrors))
+	for _, validationError := range validationErrors {
+		fieldMessages[validationError.Field] = validationError.Message
+	}
+
+	assert.Equal(t, "must contain at least 1 item", fieldMessages["images"])
+	assert.Equal(t, "is required", fieldMessages["description"])
+	assert.Equal(t, "is required", fieldMessages["service_areas"])
 }
