@@ -30,21 +30,21 @@ type IntrospectResult struct {
 }
 
 func (uc *IntrospectUsecase) Introspect(ctx context.Context, tokenStr string) IntrospectResult {
-	userID, email, accessUUID, err := uc.tokenService.ValidateAccessToken(tokenStr)
+	claims, err := uc.tokenService.ValidateAccessToken(tokenStr)
 	if err != nil {
 		log.Printf("[IntrospectUsecase.Introspect] token validation failed: %v", err)
 		return IntrospectResult{Active: false}
 	}
 
-	blacklisted, err := uc.tokenRepo.IsAccessTokenBlacklisted(ctx, accessUUID)
+	blacklisted, err := uc.tokenRepo.IsAccessTokenBlacklisted(ctx, claims.AccessUUID)
 	if err != nil {
 		log.Printf("[IntrospectUsecase.Introspect] blacklist check failed: %v", err)
 		return IntrospectResult{Active: false}
 	}
 	if blacklisted {
-		log.Printf("[IntrospectUsecase.Introspect] token is blacklisted for user %d", userID)
+		log.Printf("[IntrospectUsecase.Introspect] token is blacklisted for user %d", claims.UserID)
 		return IntrospectResult{Active: false}
 	}
 
-	return IntrospectResult{Active: true, UserID: userID, Email: email}
+	return IntrospectResult{Active: true, UserID: claims.UserID, Email: claims.Email}
 }

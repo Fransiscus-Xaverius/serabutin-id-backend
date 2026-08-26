@@ -46,6 +46,16 @@ type UserResponse struct {
 	CreatedAt    string `json:"created_at"`
 }
 
+type IntrospectRequest struct {
+	Token string `json:"token" validate:"required"`
+}
+
+type IntrospectResponse struct {
+	Active bool   `json:"active"`
+	UserID uint   `json:"user_id,omitempty"`
+	Email  string `json:"email,omitempty"`
+}
+
 type MessageResponse struct {
 	Message string `json:"message"`
 }

@@ -145,7 +145,6 @@ func main() {
 	api.Post("/auth/login", authHandler.Login)
 	api.Post("/auth/refresh", authHandler.RefreshToken)
 	api.Post("/auth/logout", authHandler.Logout)
-
 	api.Post("/auth/introspect", introspectHandler.Introspect)
 	api.Get("/users/:id", userHandler.GetPublicProfile)
 

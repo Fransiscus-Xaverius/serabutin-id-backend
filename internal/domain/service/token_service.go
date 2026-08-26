@@ -99,7 +99,13 @@ func (s *TokenService) ValidateRefreshToken(tokenStr string) (uint, string, erro
 	return uint(userIDFloat), refreshUUID, nil
 }
 
-func (s *TokenService) ValidateAccessToken(tokenStr string) (uint, string, string, error) {
+type AccessTokenClaims struct {
+	UserID     uint
+	Email      string
+	AccessUUID string
+}
+
+func (s *TokenService) ValidateAccessToken(tokenStr string) (*AccessTokenClaims, error) {
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -107,28 +113,36 @@ func (s *TokenService) ValidateAccessToken(tokenStr string) (uint, string, strin
 		return []byte(s.accessSecret), nil
 	})
 	if err != nil {
-		return 0, "", "", apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "token is invalid or expired")
+		return nil, apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "token is invalid or expired")
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid {
-		return 0, "", "", apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "token is invalid or expired")
+		return nil, apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "invalid token claims")
 	}
 
 	tokenType, _ := claims["type"].(string)
 	if tokenType != "access" {
-		return 0, "", "", apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "not an access token")
+		return nil, apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "not an access token")
+	}
+
+	accessUUID, _ := claims["access_uuid"].(string)
+	if accessUUID == "" {
+		return nil, apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "missing access_uuid")
 	}
 
 	userIDFloat, ok := claims["user_id"].(float64)
 	if !ok {
-		return 0, "", "", apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "invalid user ID in token")
+		return nil, apperror.NewDomainError(apperror.ErrTokenInvalid, "INVALID_TOKEN", "invalid user ID")
 	}
 
 	email, _ := claims["email"].(string)
-	accessUUID, _ := claims["access_uuid"].(string)
 
-	return uint(userIDFloat), email, accessUUID, nil
+	return &AccessTokenClaims{
+		UserID:     uint(userIDFloat),
+		Email:      email,
+		AccessUUID: accessUUID,
+	}, nil
 }
 
 func (s *TokenService) ExtractAccessUUID(tokenStr string) (string, error) {
