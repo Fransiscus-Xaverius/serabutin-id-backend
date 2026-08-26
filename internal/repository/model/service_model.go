@@ -14,6 +14,9 @@ type ServiceModel struct {
 	Description     string              `gorm:"size:2000;not null"`
 	UnitType        string              `gorm:"size:20;not null"`
 	BasePrice       int64               `gorm:"not null"`
+	BudgetMin       *int64              `gorm:""`
+	BudgetMax       *int64              `gorm:""`
+	AutoAcceptPrice *int64              `gorm:""`
 	DurationMinutes int                 `gorm:"not null"`
 	ServiceAreas    string              `gorm:"size:500;not null"`
 	ServiceType     string              `gorm:"size:20;default:offered;index;not null"`

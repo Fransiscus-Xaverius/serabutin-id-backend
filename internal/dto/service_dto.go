@@ -1,11 +1,16 @@
 package dto
 
+import "errors"
+
 type CreateServiceRequest struct {
 	Title           string                `json:"title" validate:"required,min=3,max=100"`
 	Category        string                `json:"category" validate:"required,oneof=cleaning handyman massage gardening ac_service moving laundry shopping errands other"`
 	Description     string                `json:"description" validate:"required,min=10,max=2000"`
 	UnitType        string                `json:"unit_type" validate:"required,oneof=per_session per_hour"`
 	BasePrice       int64                 `json:"base_price" validate:"required,min=10000"`
+	BudgetMin       *int64                `json:"budget_min,omitempty" validate:"omitempty,min=10000"`
+	BudgetMax       *int64                `json:"budget_max,omitempty" validate:"omitempty,min=10000"`
+	AutoAcceptPrice *int64                `json:"auto_accept_price,omitempty" validate:"omitempty,min=10000"`
 	DurationMinutes int                   `json:"duration_minutes" validate:"required,min=15"`
 	Images          []ServiceImageRequest `json:"images" validate:"required,min=1,max=8,dive"`
 	AddOns          []ServiceAddOnRequest `json:"add_ons,omitempty" validate:"omitempty,max=10,dive"`
@@ -46,6 +51,9 @@ type ServiceResponse struct {
 	Description     string                 `json:"description"`
 	UnitType        string                 `json:"unit_type"`
 	BasePrice       int64                  `json:"base_price"`
+	BudgetMin       *int64                 `json:"budget_min,omitempty"`
+	BudgetMax       *int64                 `json:"budget_max,omitempty"`
+	AutoAcceptPrice *int64                 `json:"auto_accept_price,omitempty"`
 	DurationMinutes int                    `json:"duration_minutes"`
 	Images          []ServiceImageResponse `json:"images"`
 	AddOns          []ServiceAddOnResponse `json:"add_ons"`
@@ -56,6 +64,27 @@ type ServiceResponse struct {
 	ReviewCount     int64                  `json:"review_count"`
 	CreatedAt       string                 `json:"created_at"`
 	UpdatedAt       string                 `json:"updated_at,omitempty"`
+}
+
+// Validate enforces customer-job budget rules without requiring budget fields
+// on offered provider services.
+func (r CreateServiceRequest) Validate() error {
+	if r.ServiceType != "requested" {
+		if r.BudgetMin != nil || r.BudgetMax != nil || r.AutoAcceptPrice != nil {
+			return errors.New("budget fields are only supported for requested services")
+		}
+		return nil
+	}
+	if r.BudgetMin == nil || r.BudgetMax == nil {
+		return errors.New("budget_min and budget_max are required for requested services")
+	}
+	if *r.BudgetMin > *r.BudgetMax {
+		return errors.New("budget_min cannot exceed budget_max")
+	}
+	if r.AutoAcceptPrice != nil && (*r.AutoAcceptPrice < *r.BudgetMin || *r.AutoAcceptPrice > *r.BudgetMax) {
+		return errors.New("auto_accept_price must be within the budget range")
+	}
+	return nil
 }
 
 type ServiceImageResponse struct {

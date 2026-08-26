@@ -12,16 +12,16 @@ import (
 )
 
 var validCategories = map[string]bool{
-	"cleaning":  true,
-	"handyman":  true,
-	"massage":   true,
-	"gardening": true,
+	"cleaning":   true,
+	"handyman":   true,
+	"massage":    true,
+	"gardening":  true,
 	"ac_service": true,
-	"moving":    true,
-	"laundry":   true,
-	"shopping":  true,
-	"errands":   true,
-	"other":     true,
+	"moving":     true,
+	"laundry":    true,
+	"shopping":   true,
+	"errands":    true,
+	"other":      true,
 }
 
 type ServiceUsecase struct {
@@ -55,6 +55,9 @@ func (uc *ServiceUsecase) CreateService(ctx context.Context, providerID uint, re
 		Description:     req.Description,
 		UnitType:        req.UnitType,
 		BasePrice:       req.BasePrice,
+		BudgetMin:       req.BudgetMin,
+		BudgetMax:       req.BudgetMax,
+		AutoAcceptPrice: req.AutoAcceptPrice,
 		DurationMinutes: req.DurationMinutes,
 		ServiceAreas:    req.ServiceAreas,
 		ServiceType:     req.ServiceType,

@@ -19,7 +19,7 @@ type fakeBidRepo struct {
 	bids map[uint]*entity.Bid
 	// Track which transition method was called — race-safety requires
 	// AcceptIfPending, not the unconditional UpdateStatus.
-	calledUpdateStatus   uint
+	calledUpdateStatus    uint
 	calledAcceptIfPending uint
 }
 
@@ -147,10 +147,14 @@ func TestCreateBid_AutoAcceptUsesRaceSafeTransition(t *testing.T) {
 		platformFee: 1000,
 	}
 
-	if _, err := uc.CreateBid(context.Background(), 42, dto.CreateBidRequest{
+	createdBid, err := uc.CreateBid(context.Background(), 42, dto.CreateBidRequest{
 		ServiceID: 1, Price: 10000, Notes: "diagram example",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("CreateBid: %v", err)
+	}
+	if createdBid.Status != "accepted" {
+		t.Errorf("auto-accepted bid response status = %q, want accepted", createdBid.Status)
 	}
 
 	if bidRepo.calledAcceptIfPending == 0 {
@@ -161,6 +165,33 @@ func TestCreateBid_AutoAcceptUsesRaceSafeTransition(t *testing.T) {
 	}
 	if len(bookingRepo.created) != 1 {
 		t.Errorf("expected 1 booking created, got %d", len(bookingRepo.created))
+	}
+}
+
+func TestCreateBid_CustomerAutoAcceptUsesServiceThreshold(t *testing.T) {
+	threshold := int64(15000)
+	bidRepo := newFakeBidRepo()
+	bookingRepo := &fakeBookingRepo{}
+	uc := &BidUsecase{
+		bidRepo:     bidRepo,
+		serviceRepo: &fakeServiceRepo{svc: &entity.Service{ID: 1, ProviderID: 100, Status: "active", ServiceType: "requested", AutoAcceptPrice: &threshold}},
+		bookingRepo: bookingRepo,
+		userRepo:    &fakeUserRepo{user: &entity.User{ID: 42}},
+		platformFee: 1000,
+	}
+
+	createdBid, err := uc.CreateBid(context.Background(), 42, dto.CreateBidRequest{ServiceID: 1, Price: 15000})
+	if err != nil {
+		t.Fatalf("CreateBid: %v", err)
+	}
+	if createdBid.Status != "accepted" {
+		t.Errorf("customer auto-accepted bid response status = %q, want accepted", createdBid.Status)
+	}
+	if bidRepo.calledAcceptIfPending != 1 {
+		t.Fatalf("customer auto-accept must use AcceptIfPending once, got %d", bidRepo.calledAcceptIfPending)
+	}
+	if len(bookingRepo.created) != 1 {
+		t.Fatalf("expected one booking from customer auto-accept, got %d", len(bookingRepo.created))
 	}
 }
 
@@ -183,7 +214,7 @@ func TestCompleteAccept_LostRaceSkipsBooking(t *testing.T) {
 	}
 
 	// Direct call to completeAccept simulates the loser of the race.
-	if err := uc.completeAccept(context.Background(), bid, svc); err != nil {
+	if _, err := uc.completeAccept(context.Background(), bid, svc); err != nil {
 		t.Fatalf("completeAccept on lost race should not error, got %v", err)
 	}
 	if len(bookingRepo.created) != 0 {

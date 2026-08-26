@@ -48,6 +48,9 @@ func (h *ServiceHandler) Create(c fiber.Ctx) error {
 		apiErr.Details = validationErrors
 		return apierror.GlobalErrorHandler(c, apiErr)
 	}
+	if err := req.Validate(); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", err.Error()))
+	}
 
 	service, err := h.serviceUsecase.CreateService(c.Context(), userID, req)
 	if err != nil {
@@ -243,6 +246,9 @@ func (h *ServiceHandler) toServiceResponse(_ context.Context, service *entity.Se
 		Description:     service.Description,
 		UnitType:        service.UnitType,
 		BasePrice:       service.BasePrice,
+		BudgetMin:       service.BudgetMin,
+		BudgetMax:       service.BudgetMax,
+		AutoAcceptPrice: service.AutoAcceptPrice,
 		DurationMinutes: service.DurationMinutes,
 		ServiceAreas:    service.ServiceAreas,
 		ServiceType:     service.ServiceType,
