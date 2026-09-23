@@ -233,6 +233,29 @@ func (h *BookingHandler) Cancel(c fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, resp)
 }
 
+func (h *BookingHandler) GetAvailableSlots(c fiber.Ctx) error {
+	providerIDStr := c.Params("id")
+	providerID, err := strconv.ParseUint(providerIDStr, 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid provider ID"))
+	}
+
+	date := c.Query("date")
+	if date == "" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "MISSING_DATE", "date query parameter is required (YYYY-MM-DD)"))
+	}
+
+	slots, err := h.bookingUsecase.GetAvailableSlots(c.Context(), uint(providerID), date)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	return response.Success(c, fiber.StatusOK, map[string]interface{}{
+		"date": date,
+		"slots": slots,
+	})
+}
+
 func (h *BookingHandler) toBookingResponse(ctx context.Context, booking *entity.Booking) dto.BookingResponse {
 	resp := dto.BookingResponse{
 		ID:            booking.ID,

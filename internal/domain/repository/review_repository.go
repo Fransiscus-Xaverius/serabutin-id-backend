@@ -10,8 +10,9 @@ type ReviewRepository interface {
 	Create(ctx context.Context, review *entity.Review) error
 	FindByServiceID(ctx context.Context, serviceID uint, page, limit int) ([]*entity.Review, int64, error)
 	FindByProviderID(ctx context.Context, providerID uint, page, limit int) ([]*entity.Review, int64, error)
+	FindReceivedByUserID(ctx context.Context, userID uint, page, limit int) ([]*entity.Review, int64, error)
 	GetServiceStats(ctx context.Context, serviceID uint) (*ServiceReviewStats, error)
-	ExistsByBookingID(ctx context.Context, bookingID uint) (bool, error)
+	ExistsByBookingAndAuthor(ctx context.Context, bookingID, authorID uint) (bool, error)
 }
 
 type ServiceReviewStats struct {

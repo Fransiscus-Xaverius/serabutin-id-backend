@@ -152,6 +152,54 @@ func (h *ReviewHandler) GetProviderReviews(c fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, resp)
 }
 
+// GetReceivedReviews returns reviews written ABOUT any user (either role) —
+// backing the public profile pages.
+func (h *ReviewHandler) GetReceivedReviews(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid user ID"))
+	}
+
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	reviews, total, err := h.reviewUsecase.GetReceivedReviews(c.Context(), uint(id), page, limit)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	data := make([]dto.ReviewResponse, len(reviews))
+	for i, r := range reviews {
+		data[i] = h.toReviewResponse(c, r)
+	}
+
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+
+	resp := dto.ReviewListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	}
+
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
 func (h *ReviewHandler) toReviewResponse(c fiber.Ctx, review *entity.Review) dto.ReviewResponse {
 	resp := dto.ReviewResponse{
 		ID:                  review.ID,
@@ -170,6 +218,18 @@ func (h *ReviewHandler) toReviewResponse(c fiber.Ctx, review *entity.Review) dto
 			Name:      customer.Name,
 			AvatarURL: customer.AvatarURL,
 		}
+	}
+
+	author, _ := h.userUsecase.GetProfile(c.Context(), review.AuthorID)
+	if author != nil {
+		resp.Author = dto.ReviewAuthorInfo{
+			ID:        author.ID,
+			Name:      author.Name,
+			AvatarURL: author.AvatarURL,
+			Role:      review.AuthorRole,
+		}
+	} else {
+		resp.Author = dto.ReviewAuthorInfo{ID: review.AuthorID, Role: review.AuthorRole}
 	}
 
 	return resp

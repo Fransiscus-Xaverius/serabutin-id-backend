@@ -17,7 +17,15 @@ type ReviewResponse struct {
 	ValueRating         int            `json:"value_rating"`
 	Comment             string         `json:"comment"`
 	Customer            ReviewUserInfo `json:"customer"`
+	Author              ReviewAuthorInfo `json:"author"`
 	CreatedAt           string         `json:"created_at"`
+}
+
+type ReviewAuthorInfo struct {
+	ID        uint   `json:"id"`
+	Name      string `json:"name"`
+	AvatarURL string `json:"avatar_url"`
+	Role      string `json:"role"`
 }
 
 type ReviewUserInfo struct {

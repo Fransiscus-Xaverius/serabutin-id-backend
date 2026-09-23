@@ -70,7 +70,7 @@ func (r *ReviewRepository) FindByServiceID(ctx context.Context, serviceID uint, 
 func (r *ReviewRepository) FindByProviderID(ctx context.Context, providerID uint, page, limit int) ([]*entity.Review, int64, error) {
 	var total int64
 
-	if err := r.db.WithContext(ctx).Model(&model.ReviewModel{}).Where("provider_id = ?", providerID).Count(&total).Error; err != nil {
+	if err := r.db.WithContext(ctx).Model(&model.ReviewModel{}).Where("provider_id = ? AND author_id != ?", providerID, providerID).Count(&total).Error; err != nil {
 		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
 	}
 
@@ -80,7 +80,35 @@ func (r *ReviewRepository) FindByProviderID(ctx context.Context, providerID uint
 		Table("reviews").
 		Select("reviews.*, users.name as customer_name, users.avatar_url as customer_avatar").
 		Joins("LEFT JOIN users ON users.id = reviews.customer_id").
-		Where("reviews.provider_id = ?", providerID).
+		Where("reviews.provider_id = ? AND reviews.author_id != ?", providerID, providerID).
+		Order("reviews.created_at DESC").
+		Offset(offset).
+		Limit(limit).
+		Find(&results).Error
+	if err != nil {
+		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+
+	return r.toEntitiesWithCustomer(results), total, nil
+}
+
+// FindReceivedByUserID returns reviews written ABOUT the user by the other party.
+func (r *ReviewRepository) FindReceivedByUserID(ctx context.Context, userID uint, page, limit int) ([]*entity.Review, int64, error) {
+	var total int64
+
+	scope := r.db.WithContext(ctx).Model(&model.ReviewModel{}).
+		Where("(customer_id = ? OR provider_id = ?) AND author_id != ?", userID, userID, userID)
+	if err := scope.Count(&total).Error; err != nil {
+		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+
+	var results []reviewWithCustomer
+	offset := (page - 1) * limit
+	err := r.db.WithContext(ctx).
+		Table("reviews").
+		Select("reviews.*, users.name as customer_name, users.avatar_url as customer_avatar").
+		Joins("LEFT JOIN users ON users.id = reviews.customer_id").
+		Where("(reviews.customer_id = ? OR reviews.provider_id = ?) AND reviews.author_id != ?", userID, userID, userID).
 		Order("reviews.created_at DESC").
 		Offset(offset).
 		Limit(limit).
@@ -107,9 +135,9 @@ func (r *ReviewRepository) GetServiceStats(ctx context.Context, serviceID uint) 
 	return &stats, nil
 }
 
-func (r *ReviewRepository) ExistsByBookingID(ctx context.Context, bookingID uint) (bool, error) {
+func (r *ReviewRepository) ExistsByBookingAndAuthor(ctx context.Context, bookingID, authorID uint) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&model.ReviewModel{}).Where("booking_id = ?", bookingID).Count(&count).Error
+	err := r.db.WithContext(ctx).Model(&model.ReviewModel{}).Where("booking_id = ? AND author_id = ?", bookingID, authorID).Count(&count).Error
 	if err != nil {
 		return false, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
 	}
@@ -123,6 +151,8 @@ func (r *ReviewRepository) toModel(review *entity.Review) *model.ReviewModel {
 		ServiceID:           review.ServiceID,
 		CustomerID:          review.CustomerID,
 		ProviderID:          review.ProviderID,
+		AuthorID:            review.AuthorID,
+		AuthorRole:          review.AuthorRole,
 		Rating:              review.Rating,
 		CommunicationRating: review.CommunicationRating,
 		QualityRating:       review.QualityRating,
@@ -140,6 +170,8 @@ func (r *ReviewRepository) toEntitiesWithCustomer(results []reviewWithCustomer) 
 			ServiceID:           res.ReviewModel.ServiceID,
 			CustomerID:          res.ReviewModel.CustomerID,
 			ProviderID:          res.ReviewModel.ProviderID,
+			AuthorID:            res.ReviewModel.AuthorID,
+			AuthorRole:          res.ReviewModel.AuthorRole,
 			Rating:              res.ReviewModel.Rating,
 			CommunicationRating: res.ReviewModel.CommunicationRating,
 			QualityRating:       res.ReviewModel.QualityRating,

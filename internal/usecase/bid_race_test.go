@@ -98,6 +98,9 @@ func (f *fakeBookingRepo) UpdateStatus(ctx context.Context, id uint, status stri
 func (f *fakeBookingRepo) FindByUserID(ctx context.Context, userID uint, role string, filter repository.BookingFilter) ([]*entity.Booking, int64, error) {
 	return nil, 0, nil
 }
+func (f *fakeBookingRepo) FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error) {
+	return nil, nil
+}
 
 type fakeServiceRepo struct{ svc *entity.Service }
 

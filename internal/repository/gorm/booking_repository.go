@@ -3,6 +3,7 @@ package gormrepo
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
@@ -98,6 +99,24 @@ func (r *BookingRepository) FindByUserID(ctx context.Context, userID uint, role 
 	}
 
 	return r.toEntities(models), total, nil
+}
+
+func (r *BookingRepository) FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error) {
+	parsed, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return nil, apperror.NewDomainError(apperror.ErrValidation, "INVALID_DATE", "invalid date format, expected YYYY-MM-DD")
+	}
+
+	var slots []string
+	err = r.db.WithContext(ctx).
+		Model(&model.BookingModel{}).
+		Where("provider_id = ? AND schedule_date = ? AND status NOT IN ?", providerID, parsed, []string{"rejected", "cancelled"}).
+		Distinct("schedule_time").
+		Pluck("schedule_time", &slots).Error
+	if err != nil {
+		return nil, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+	return slots, nil
 }
 
 func (r *BookingRepository) toModel(booking *entity.Booking) *model.BookingModel {

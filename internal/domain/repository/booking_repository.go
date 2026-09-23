@@ -11,6 +11,7 @@ type BookingRepository interface {
 	FindByID(ctx context.Context, id uint) (*entity.Booking, error)
 	UpdateStatus(ctx context.Context, id uint, status string) error
 	FindByUserID(ctx context.Context, userID uint, role string, filter BookingFilter) ([]*entity.Booking, int64, error)
+	FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error)
 }
 
 type BookingFilter struct {

@@ -230,10 +230,29 @@ func (h *ServiceHandler) SetStatus(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid service ID"))
 	}
 
-	if err := h.serviceUsecase.SetServiceStatus(c.Context(), userID, uint(id), "inactive"); err != nil {
+	// The body carries the desired terminal status. `deleted` is the soft-delete
+	// (permanent from the user's perspective); `inactive` keeps the listing
+	// recoverable. Empty body defaults to `deleted` so a bare DELETE is the
+	// expected user gesture.
+	var body struct {
+		Status string `json:"status"`
+	}
+	_ = c.Bind().Body(&body) // body is optional
+	target := body.Status
+	if target == "" {
+		target = "deleted"
+	}
+	if target != "inactive" && target != "deleted" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_STATUS", "status must be 'inactive' or 'deleted'"))
+	}
+
+	if err := h.serviceUsecase.SetServiceStatus(c.Context(), userID, uint(id), target); err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
+	if target == "deleted" {
+		return response.SuccessMessage(c, fiber.StatusOK, "service deleted successfully")
+	}
 	return response.SuccessMessage(c, fiber.StatusOK, "service deactivated successfully")
 }
 

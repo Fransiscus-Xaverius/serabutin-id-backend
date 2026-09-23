@@ -11,11 +11,17 @@ import (
 )
 
 type UserHandler struct {
-	userUsecase *usecase.UserUsecase
+	userUsecase  *usecase.UserUsecase
+	statsUsecase *usecase.StatsUsecase
+	reviewUsecase *usecase.ReviewUsecase
 }
 
-func NewUserHandler(userUsecase *usecase.UserUsecase) *UserHandler {
-	return &UserHandler{userUsecase: userUsecase}
+func NewUserHandler(userUsecase *usecase.UserUsecase, statsUsecase *usecase.StatsUsecase, reviewUsecase *usecase.ReviewUsecase) *UserHandler {
+	return &UserHandler{
+		userUsecase:   userUsecase,
+		statsUsecase:  statsUsecase,
+		reviewUsecase: reviewUsecase,
+	}
 }
 
 func (h *UserHandler) GetPublicProfile(c fiber.Ctx) error {
@@ -38,4 +44,20 @@ func (h *UserHandler) GetPublicProfile(c fiber.Ctx) error {
 	}
 
 	return response.Success(c, fiber.StatusOK, resp)
+}
+
+func (h *UserHandler) GetStats(c fiber.Ctx) error {
+	idStr := c.Params("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		apiErr := apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid user id")
+		return apierror.GlobalErrorHandler(c, apiErr)
+	}
+
+	stats, err := h.statsUsecase.GetUserStats(c.Context(), uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	return response.Success(c, fiber.StatusOK, stats)
 }

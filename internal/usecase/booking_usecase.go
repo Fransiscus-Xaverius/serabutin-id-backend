@@ -48,6 +48,16 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 		return nil, apperror.NewDomainError(apperror.ErrValidation, "INVALID_DATE", "invalid schedule date format, expected YYYY-MM-DD")
 	}
 
+	booked, err := uc.bookingRepo.FindBookedSlotsByProvider(ctx, service.ProviderID, req.ScheduleDate)
+	if err != nil {
+		return nil, err
+	}
+	for _, taken := range booked {
+		if taken == req.ScheduleTime {
+			return nil, apperror.NewDomainError(apperror.ErrValidation, "SLOT_UNAVAILABLE", "this time slot is already booked")
+		}
+	}
+
 	subTotal := service.BasePrice
 	var bookingAddOns []entity.BookingAddOn
 
@@ -237,6 +247,27 @@ func (uc *BookingUsecase) CancelBooking(ctx context.Context, userID uint, id uin
 
 	booking.Status = "cancelled"
 	return booking, nil
+}
+
+func (uc *BookingUsecase) GetAvailableSlots(ctx context.Context, providerID uint, date string) ([]string, error) {
+	booked, err := uc.bookingRepo.FindBookedSlotsByProvider(ctx, providerID, date)
+	if err != nil {
+		return nil, err
+	}
+
+	bookedSet := make(map[string]struct{}, len(booked))
+	for _, s := range booked {
+		bookedSet[s] = struct{}{}
+	}
+
+	allSlots := []string{"08:00", "09:30", "11:00", "13:00", "14:30", "16:00"}
+	available := make([]string, 0, len(allSlots))
+	for _, slot := range allSlots {
+		if _, taken := bookedSet[slot]; !taken {
+			available = append(available, slot)
+		}
+	}
+	return available, nil
 }
 
 func parseScheduleDate(dateStr string) (time.Time, error) {

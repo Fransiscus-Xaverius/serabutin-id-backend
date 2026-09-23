@@ -57,8 +57,20 @@ func main() {
 		logger.Log.Fatal().Err(err).Msg("failed to connect to redis")
 	}
 
+	// Reviews v2 prep: add the new columns as nullable-with-default and backfill
+	// legacy rows (author = customer) BEFORE AutoMigrate enforces NOT NULL,
+	// otherwise the migration fails on existing data.
+	db.Exec(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS author_id bigint DEFAULT 0`)
+	db.Exec(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS author_role varchar(20) DEFAULT 'customer'`)
+	db.Exec(`UPDATE reviews SET author_id = customer_id WHERE author_id = 0 OR author_id IS NULL`)
+	db.Exec(`UPDATE reviews SET author_role = 'customer' WHERE author_role = '' OR author_role IS NULL`)
 	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
+	}
+	// Drop the legacy one-review-per-booking unique index (replaced by the
+	// composite booking+author index).
+	if db.Migrator().HasIndex(&model.ReviewModel{}, "idx_reviews_booking_id") {
+		db.Migrator().DropIndex(&model.ReviewModel{}, "idx_reviews_booking_id")
 	}
 	logger.Log.Info().Msg("database migrated successfully")
 
@@ -91,7 +103,8 @@ func main() {
 	introspectUsecase := usecase.NewIntrospectUsecase(tokenService, tokenRepo)
 	introspectHandler := handler.NewIntrospectHandler(introspectUsecase)
 	userUsecase := usecase.NewUserUsecase(userRepo)
-	userHandler := handler.NewUserHandler(userUsecase)
+	statsUsecase := usecase.NewStatsUsecase(userRepo, serviceRepo, bookingRepo)
+	userHandler := handler.NewUserHandler(userUsecase, statsUsecase, reviewUsecase)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
 	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)
@@ -147,11 +160,14 @@ func main() {
 	api.Post("/auth/logout", authHandler.Logout)
 	api.Post("/auth/introspect", introspectHandler.Introspect)
 	api.Get("/users/:id", userHandler.GetPublicProfile)
+	api.Get("/users/:id/stats", userHandler.GetStats)
+	api.Get("/users/:id/reviews", reviewHandler.GetReceivedReviews)
 
 	api.Get("/services", serviceHandler.List)
 	api.Get("/services/:id", serviceHandler.Get)
 	api.Get("/services/:id/reviews", reviewHandler.GetServiceReviews)
 	api.Get("/providers/:id/reviews", reviewHandler.GetProviderReviews)
+	api.Get("/providers/:id/availability", bookingHandler.GetAvailableSlots)
 
 	protected := api.Group("")
 	protected.Use(authMiddleware.Authenticate())

@@ -162,7 +162,10 @@ func (r *ServiceRepository) FindByProviderID(ctx context.Context, providerID uin
 	var models []model.ServiceModel
 	var total int64
 
-	query := r.db.WithContext(ctx).Model(&model.ServiceModel{}).Where("services.provider_id = ?", providerID)
+	// Soft-deleted services are hidden permanently from the provider's listing.
+	query := r.db.WithContext(ctx).Model(&model.ServiceModel{}).
+		Where("services.provider_id = ?", providerID).
+		Where("services.status != ?", "deleted")
 
 	if filter.Query != "" {
 		query = query.Where("(services.title ILIKE ? OR services.description ILIKE ?)", "%"+filter.Query+"%", "%"+filter.Query+"%")

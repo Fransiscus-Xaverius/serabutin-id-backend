@@ -4,10 +4,12 @@ import "time"
 
 type ReviewModel struct {
 	ID                  uint      `gorm:"primaryKey"`
-	BookingID           uint      `gorm:"uniqueIndex;not null"`
+	BookingID           uint      `gorm:"uniqueIndex:idx_reviews_booking_author,priority:1;not null"`
 	ServiceID           uint      `gorm:"index;not null"`
 	CustomerID          uint      `gorm:"not null"`
 	ProviderID          uint      `gorm:"index;not null"`
+	AuthorID            uint      `gorm:"uniqueIndex:idx_reviews_booking_author,priority:2;not null"`
+	AuthorRole          string    `gorm:"size:20;not null;default:customer"`
 	Rating              int       `gorm:"not null"`
 	CommunicationRating int       `gorm:"not null"`
 	QualityRating       int       `gorm:"not null"`

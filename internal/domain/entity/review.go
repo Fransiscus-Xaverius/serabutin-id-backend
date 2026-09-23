@@ -8,6 +8,8 @@ type Review struct {
 	ServiceID           uint
 	CustomerID          uint
 	ProviderID          uint
+	AuthorID            uint
+	AuthorRole          string
 	Rating              int
 	CommunicationRating int
 	QualityRating       int

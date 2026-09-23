@@ -24,35 +24,44 @@ func NewReviewUsecase(reviewRepo repository.ReviewRepository, bookingRepo reposi
 	}
 }
 
-func (uc *ReviewUsecase) CreateReview(ctx context.Context, customerID uint, req dto.CreateReviewRequest) (*entity.Review, error) {
+func (uc *ReviewUsecase) CreateReview(ctx context.Context, callerID uint, req dto.CreateReviewRequest) (*entity.Review, error) {
 	booking, err := uc.bookingRepo.FindByID(ctx, req.BookingID)
 	if err != nil {
 		log.Printf("[ReviewUsecase.CreateReview] find booking error: %v", err)
 		return nil, err
 	}
 
-	if booking.CustomerID != customerID {
-		return nil, apperror.NewDomainError(apperror.ErrNotBookingOwner, "NOT_OWNER", "you are not the booking owner")
+	// Either booking party may review, exactly once per author per booking.
+	var authorRole string
+	switch callerID {
+	case booking.CustomerID:
+		authorRole = "customer"
+	case booking.ProviderID:
+		authorRole = "provider"
+	default:
+		return nil, apperror.NewDomainError(apperror.ErrForbidden, "NOT_PARTY", "only the booking customer or provider can review")
 	}
 
 	if booking.Status != "completed" {
 		return nil, apperror.NewDomainError(apperror.ErrBookingNotCompleted, "BOOKING_NOT_COMPLETED", "booking must be completed to leave a review")
 	}
 
-	exists, err := uc.reviewRepo.ExistsByBookingID(ctx, req.BookingID)
+	exists, err := uc.reviewRepo.ExistsByBookingAndAuthor(ctx, req.BookingID, callerID)
 	if err != nil {
 		log.Printf("[ReviewUsecase.CreateReview] exists check error: %v", err)
 		return nil, err
 	}
 	if exists {
-		return nil, apperror.NewDomainError(apperror.ErrReviewAlreadyExists, "REVIEW_EXISTS", "review already exists for this booking")
+		return nil, apperror.NewDomainError(apperror.ErrReviewAlreadyExists, "REVIEW_EXISTS", "you have already reviewed this booking")
 	}
 
 	review := &entity.Review{
 		BookingID:           req.BookingID,
 		ServiceID:           booking.ServiceID,
-		CustomerID:          customerID,
+		CustomerID:          booking.CustomerID,
 		ProviderID:          booking.ProviderID,
+		AuthorID:            callerID,
+		AuthorRole:          authorRole,
 		Rating:              req.Rating,
 		CommunicationRating: req.CommunicationRating,
 		QualityRating:       req.QualityRating,
@@ -88,6 +97,16 @@ func (uc *ReviewUsecase) GetProviderReviews(ctx context.Context, providerID uint
 	reviews, total, err := uc.reviewRepo.FindByProviderID(ctx, providerID, page, limit)
 	if err != nil {
 		log.Printf("[ReviewUsecase.GetProviderReviews] find error: %v", err)
+		return nil, 0, err
+	}
+
+	return reviews, total, nil
+}
+
+func (uc *ReviewUsecase) GetReceivedReviews(ctx context.Context, userID uint, page, limit int) ([]*entity.Review, int64, error) {
+	reviews, total, err := uc.reviewRepo.FindReceivedByUserID(ctx, userID, page, limit)
+	if err != nil {
+		log.Printf("[ReviewUsecase.GetReceivedReviews] find error: %v", err)
 		return nil, 0, err
 	}
 
