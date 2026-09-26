@@ -95,6 +95,9 @@ func (f *fakeBookingRepo) FindByID(ctx context.Context, id uint) (*entity.Bookin
 func (f *fakeBookingRepo) UpdateStatus(ctx context.Context, id uint, status string) error {
 	return nil
 }
+func (f *fakeBookingRepo) UpdateCancel(ctx context.Context, id uint, cancellationID uint, cancelledBy uint) error {
+	return nil
+}
 func (f *fakeBookingRepo) FindByUserID(ctx context.Context, userID uint, role string, filter repository.BookingFilter) ([]*entity.Booking, int64, error) {
 	return nil, 0, nil
 }

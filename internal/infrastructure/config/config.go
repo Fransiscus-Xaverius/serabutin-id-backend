@@ -30,6 +30,9 @@ type Config struct {
 
 	PlatformFee int64
 
+	CancellationFeeCustomer int64
+	CancellationFeeProvider int64
+
 	StorageDriver      string
 	StorageLocalPath   string
 	StorageLocalURL    string
@@ -93,6 +96,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("LOGIN_LOCKOUT_MINUTES", 15)
 
 	viper.SetDefault("PLATFORM_FEE", 5000)
+	viper.SetDefault("CANCELLATION_FEE_CUSTOMER", 5000)
+	viper.SetDefault("CANCELLATION_FEE_PROVIDER", 5000)
 
 	viper.SetDefault("STORAGE_DRIVER", "local")
 	viper.SetDefault("STORAGE_LOCAL_PATH", "./uploads")
@@ -121,6 +126,8 @@ func Load() (*Config, error) {
 	cfg.LoginMaxAttempts = viper.GetInt("LOGIN_MAX_ATTEMPTS")
 	cfg.LoginLockoutMinutes = viper.GetInt("LOGIN_LOCKOUT_MINUTES")
 	cfg.PlatformFee = viper.GetInt64("PLATFORM_FEE")
+	cfg.CancellationFeeCustomer = viper.GetInt64("CANCELLATION_FEE_CUSTOMER")
+	cfg.CancellationFeeProvider = viper.GetInt64("CANCELLATION_FEE_PROVIDER")
 
 	cfg.StorageDriver = viper.GetString("STORAGE_DRIVER")
 	cfg.StorageLocalPath = viper.GetString("STORAGE_LOCAL_PATH")

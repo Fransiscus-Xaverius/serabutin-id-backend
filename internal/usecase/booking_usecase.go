@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -12,10 +13,14 @@ import (
 )
 
 type BookingUsecase struct {
-	bookingRepo repository.BookingRepository
-	serviceRepo repository.ServiceRepository
-	userRepo    repository.UserRepository
-	platformFee int64
+	bookingRepo       repository.BookingRepository
+	serviceRepo       repository.ServiceRepository
+	userRepo          repository.UserRepository
+	cancelRepo        repository.CancellationRepository
+	notifier          Notifier
+	platformFee       int64
+	cancelFeeCustomer int64
+	cancelFeeProvider int64
 }
 
 func NewBookingUsecase(
@@ -23,12 +28,37 @@ func NewBookingUsecase(
 	serviceRepo repository.ServiceRepository,
 	userRepo repository.UserRepository,
 	platformFee int64,
+	cancelFeeCustomer int64,
+	cancelFeeProvider int64,
+	cancelRepo repository.CancellationRepository,
 ) *BookingUsecase {
 	return &BookingUsecase{
-		bookingRepo: bookingRepo,
-		serviceRepo: serviceRepo,
-		userRepo:    userRepo,
-		platformFee: platformFee,
+		bookingRepo:       bookingRepo,
+		serviceRepo:       serviceRepo,
+		userRepo:          userRepo,
+		cancelRepo:        cancelRepo,
+		platformFee:       platformFee,
+		cancelFeeCustomer: cancelFeeCustomer,
+		cancelFeeProvider: cancelFeeProvider,
+	}
+}
+
+func (uc *BookingUsecase) SetNotifier(n Notifier) {
+	uc.notifier = n
+}
+
+// notifyBoth writes one notification row per participant. Best-effort:
+// failures are logged and never fail the booking transition.
+func (uc *BookingUsecase) notifyBoth(ctx context.Context, booking *entity.Booking, typ, title, body string) {
+	if uc.notifier == nil {
+		return
+	}
+	data := fmt.Sprintf(`{"booking_id":%d,"status":%q}`, booking.ID, booking.Status)
+	if _, err := uc.notifier.Notify(ctx, booking.CustomerID, typ, title, body, data); err != nil {
+		log.Printf("[BookingUsecase.notify] customer %d: %v", booking.CustomerID, err)
+	}
+	if _, err := uc.notifier.Notify(ctx, booking.ProviderID, typ, title, body, data); err != nil {
+		log.Printf("[BookingUsecase.notify] provider %d: %v", booking.ProviderID, err)
 	}
 }
 
@@ -103,6 +133,7 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 		return nil, err
 	}
 
+	uc.notifyBoth(ctx, booking, "booking.created", "Pesanan baru", "Pesanan baru dibuat dan menunggu konfirmasi mitra.")
 	return booking, nil
 }
 
@@ -150,6 +181,7 @@ func (uc *BookingUsecase) AcceptBooking(ctx context.Context, providerID uint, id
 	}
 
 	booking.Status = "accepted"
+	uc.notifyBoth(ctx, booking, "booking.accepted", "Pesanan diterima", "Mitra menerima pesanan Anda.")
 	return booking, nil
 }
 
@@ -174,6 +206,7 @@ func (uc *BookingUsecase) RejectBooking(ctx context.Context, providerID uint, id
 	}
 
 	booking.Status = "rejected"
+	uc.notifyBoth(ctx, booking, "booking.rejected", "Pesanan ditolak", "Mitra menolak pesanan Anda.")
 	return booking, nil
 }
 
@@ -198,6 +231,7 @@ func (uc *BookingUsecase) ConfirmBooking(ctx context.Context, providerID uint, i
 	}
 
 	booking.Status = "confirmed"
+	uc.notifyBoth(ctx, booking, "booking.confirmed", "Pekerjaan dimulai", "Mitra mengkonfirmasi dan mulai mengerjakan pesanan.")
 	return booking, nil
 }
 
@@ -222,31 +256,87 @@ func (uc *BookingUsecase) CompleteBooking(ctx context.Context, customerID uint, 
 	}
 
 	booking.Status = "completed"
+	uc.notifyBoth(ctx, booking, "booking.completed", "Pesanan selesai", "Pesanan ditandai selesai. Silakan beri ulasan.")
 	return booking, nil
 }
 
-func (uc *BookingUsecase) CancelBooking(ctx context.Context, userID uint, id uint) (*entity.Booking, error) {
+func (uc *BookingUsecase) CancelBooking(ctx context.Context, userID uint, id uint, reason string, detail string) (*entity.Booking, *entity.Cancellation, error) {
 	booking, err := uc.bookingRepo.FindByID(ctx, id)
 	if err != nil {
 		log.Printf("[BookingUsecase.CancelBooking] find error: %v", err)
-		return nil, err
+		return nil, nil, err
 	}
 
 	if booking.CustomerID != userID && booking.ProviderID != userID {
-		return nil, apperror.NewDomainError(apperror.ErrNotBookingParticipant, "NOT_PARTICIPANT", "you are not a participant of this booking")
+		return nil, nil, apperror.NewDomainError(apperror.ErrNotBookingParticipant, "NOT_PARTICIPANT", "you are not a participant of this booking")
 	}
 
-	if booking.Status != "pending" && booking.Status != "accepted" {
-		return nil, apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_TRANSITION", "can only cancel pending or accepted bookings")
+	if booking.Status != "pending" && booking.Status != "accepted" && booking.Status != "confirmed" {
+		return nil, nil, apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_TRANSITION", "can only cancel pending, accepted or confirmed bookings")
 	}
 
-	if err := uc.bookingRepo.UpdateStatus(ctx, id, "cancelled"); err != nil {
-		log.Printf("[BookingUsecase.CancelBooking] update status error: %v", err)
-		return nil, err
+	if reason == "" || !entity.ValidCancelReasons[reason] {
+		return nil, nil, apperror.NewDomainError(apperror.ErrValidation, "INVALID_REASON", "cancel reason is required (changed_mind, found_other, schedule_conflict, no_response, other)")
+	}
+
+	role := "customer"
+	if userID == booking.ProviderID {
+		role = "provider"
+	}
+
+	// Grab rule: pending = free; mitra cancel on accepted/confirmed = provider
+	// fee; customer cancel on confirmed (in-progress) = customer fee.
+	var fee int64
+	switch booking.Status {
+	case "pending":
+		fee = 0
+	case "accepted":
+		if role == "provider" {
+			fee = uc.cancelFeeProvider
+		}
+	case "confirmed":
+		if role == "provider" {
+			fee = uc.cancelFeeProvider
+		} else {
+			fee = uc.cancelFeeCustomer
+		}
+	}
+
+	cancellation := &entity.Cancellation{
+		BookingID:           booking.ID,
+		CancelledBy:         userID,
+		CancelledByRole:     role,
+		Reason:              reason,
+		Detail:              detail,
+		FeeCharged:          fee,
+		PlatformFeeSnapshot: booking.PlatformFee,
+		SubtotalSnapshot:    booking.SubTotal,
+		PolicyVersion:       entity.CancellationPolicyVersion,
+	}
+	if uc.cancelRepo == nil {
+		return nil, nil, apperror.NewDomainError(apperror.ErrInternalServer, "CANCEL_REPO_MISSING", "cancellation repository not configured")
+	}
+	if err := uc.cancelRepo.Create(ctx, cancellation); err != nil {
+		log.Printf("[BookingUsecase.CancelBooking] create cancellation error: %v", err)
+		return nil, nil, err
+	}
+
+	if err := uc.bookingRepo.UpdateCancel(ctx, id, cancellation.ID, userID); err != nil {
+		log.Printf("[BookingUsecase.CancelBooking] update cancel error: %v", err)
+		return nil, nil, err
 	}
 
 	booking.Status = "cancelled"
-	return booking, nil
+	booking.CancellationID = &cancellation.ID
+	booking.CancelledBy = &userID
+	now := cancellation.CreatedAt
+	booking.CancelledAt = &now
+	body := "Pesanan dibatalkan tanpa biaya."
+	if fee > 0 {
+		body = fmt.Sprintf("Pesanan dibatalkan. Biaya pembatalan Rp %d dibebankan ke %s.", fee, role)
+	}
+	uc.notifyBoth(ctx, booking, "booking.cancelled", "Pesanan dibatalkan", body)
+	return booking, cancellation, nil
 }
 
 func (uc *BookingUsecase) GetAvailableSlots(ctx context.Context, providerID uint, date string) ([]string, error) {

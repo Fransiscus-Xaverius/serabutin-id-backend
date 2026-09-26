@@ -224,12 +224,34 @@ func (h *BookingHandler) Cancel(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
 	}
 
-	booking, err := h.bookingUsecase.CancelBooking(c.Context(), userID, uint(id))
+	var req dto.CancelBookingRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_REQUEST", "cancel reason is required"))
+	}
+	if validationErrors := validator.Validate(req); validationErrors != nil {
+		apiErr := apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed")
+		apiErr.Details = validationErrors
+		return apierror.GlobalErrorHandler(c, apiErr)
+	}
+
+	booking, cancellation, err := h.bookingUsecase.CancelBooking(c.Context(), userID, uint(id), req.Reason, req.Detail)
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
 	resp := h.toBookingResponse(c.Context(), booking)
+	if cancellation != nil {
+		resp.Cancellation = &dto.CancellationResponse{
+			ID:              cancellation.ID,
+			CancelledBy:     cancellation.CancelledBy,
+			CancelledByRole: cancellation.CancelledByRole,
+			Reason:          cancellation.Reason,
+			Detail:          cancellation.Detail,
+			FeeCharged:      cancellation.FeeCharged,
+			PolicyVersion:   cancellation.PolicyVersion,
+			CreatedAt:       cancellation.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+	}
 	return response.Success(c, fiber.StatusOK, resp)
 }
 
@@ -251,24 +273,30 @@ func (h *BookingHandler) GetAvailableSlots(c fiber.Ctx) error {
 	}
 
 	return response.Success(c, fiber.StatusOK, map[string]interface{}{
-		"date": date,
+		"date":  date,
 		"slots": slots,
 	})
 }
 
 func (h *BookingHandler) toBookingResponse(ctx context.Context, booking *entity.Booking) dto.BookingResponse {
 	resp := dto.BookingResponse{
-		ID:            booking.ID,
-		ScheduleDate:  booking.ScheduleDate.Format("2006-01-02"),
-		ScheduleTime:  booking.ScheduleTime,
-		Address:       booking.Address,
-		Notes:         booking.Notes,
-		SubTotal:      booking.SubTotal,
-		PlatformFee:   booking.PlatformFee,
-		Total:         booking.Total,
-		PaymentMethod: booking.PaymentMethod,
-		Status:        booking.Status,
-		CreatedAt:     booking.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:             booking.ID,
+		ScheduleDate:   booking.ScheduleDate.Format("2006-01-02"),
+		ScheduleTime:   booking.ScheduleTime,
+		Address:        booking.Address,
+		Notes:          booking.Notes,
+		SubTotal:       booking.SubTotal,
+		PlatformFee:    booking.PlatformFee,
+		Total:          booking.Total,
+		PaymentMethod:  booking.PaymentMethod,
+		Status:         booking.Status,
+		CancellationID: booking.CancellationID,
+		CancelledBy:    booking.CancelledBy,
+		CreatedAt:      booking.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if booking.CancelledAt != nil {
+		s := booking.CancelledAt.Format("2006-01-02T15:04:05Z")
+		resp.CancelledAt = &s
 	}
 
 	customer, _ := h.userUsecase.GetProfile(ctx, booking.CustomerID)

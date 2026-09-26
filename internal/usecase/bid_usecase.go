@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -17,6 +18,7 @@ type BidUsecase struct {
 	serviceRepo repository.ServiceRepository
 	bookingRepo repository.BookingRepository
 	userRepo    repository.UserRepository
+	notifier    Notifier
 	platformFee int64
 }
 
@@ -33,6 +35,27 @@ func NewBidUsecase(
 		bookingRepo: bookingRepo,
 		userRepo:    userRepo,
 		platformFee: platformFee,
+	}
+}
+
+func (uc *BidUsecase) SetNotifier(n Notifier) {
+	uc.notifier = n
+}
+
+// notifyBidBoth writes one notification row per bid party (bidder + service
+// owner). Best-effort: failures are logged and never fail the transition.
+func (uc *BidUsecase) notifyBidBoth(ctx context.Context, bidderID, ownerID uint, typ, title, body string, bidID uint) {
+	if uc.notifier == nil {
+		return
+	}
+	data := fmt.Sprintf(`{"bid_id":%d}`, bidID)
+	if _, err := uc.notifier.Notify(ctx, bidderID, typ, title, body, data); err != nil {
+		log.Printf("[BidUsecase.notify] bidder %d: %v", bidderID, err)
+	}
+	if ownerID != bidderID {
+		if _, err := uc.notifier.Notify(ctx, ownerID, typ, title, body, data); err != nil {
+			log.Printf("[BidUsecase.notify] owner %d: %v", ownerID, err)
+		}
 	}
 }
 
@@ -75,6 +98,9 @@ func (uc *BidUsecase) CreateBid(ctx context.Context, providerID uint, req dto.Cr
 	}
 	if accepted {
 		bid.Status = "accepted"
+		uc.notifyBidBoth(ctx, providerID, service.ProviderID, "bid.accepted", "Penawaran diterima otomatis", "Penawaran Anda memenuhi harga auto-accept dan booking dibuat.", bid.ID)
+	} else {
+		uc.notifyBidBoth(ctx, providerID, service.ProviderID, "bid.created", "Penawaran baru", "Mitra mengajukan penawaran untuk lowongan Anda.", bid.ID)
 	}
 
 	return bid, nil
@@ -210,6 +236,7 @@ func (uc *BidUsecase) AcceptBid(ctx context.Context, userID uint, bidID uint) (*
 		return nil, err
 	}
 
+	uc.notifyBidBoth(ctx, bid.ProviderID, userID, "bid.accepted", "Penawaran diterima", "Penawaran Anda diterima dan booking dibuat.", bid.ID)
 	return booking, nil
 }
 
@@ -232,5 +259,9 @@ func (uc *BidUsecase) RejectBid(ctx context.Context, userID uint, bidID uint) er
 		return apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_TRANSITION", "can only reject pending bids")
 	}
 
-	return uc.bidRepo.UpdateStatus(ctx, bidID, "rejected")
+	if err := uc.bidRepo.UpdateStatus(ctx, bidID, "rejected"); err != nil {
+		return err
+	}
+	uc.notifyBidBoth(ctx, bid.ProviderID, userID, "bid.rejected", "Penawaran ditolak", "Penawaran Anda ditolak.", bid.ID)
+	return nil
 }

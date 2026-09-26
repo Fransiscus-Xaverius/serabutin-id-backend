@@ -67,6 +67,24 @@ func (r *BookingRepository) UpdateStatus(ctx context.Context, id uint, status st
 	return nil
 }
 
+func (r *BookingRepository) UpdateCancel(ctx context.Context, id uint, cancellationID uint, cancelledBy uint) error {
+	now := time.Now()
+	updates := map[string]interface{}{
+		"status":          "cancelled",
+		"cancellation_id": cancellationID,
+		"cancelled_by":    cancelledBy,
+		"cancelled_at":    now,
+	}
+	result := r.db.WithContext(ctx).Model(&model.BookingModel{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", result.Error.Error())
+	}
+	if result.RowsAffected == 0 {
+		return apperror.NewDomainError(apperror.ErrBookingNotFound, "BOOKING_NOT_FOUND", "booking not found")
+	}
+	return nil
+}
+
 func (r *BookingRepository) FindByUserID(ctx context.Context, userID uint, role string, filter repository.BookingFilter) ([]*entity.Booking, int64, error) {
 	var models []model.BookingModel
 	var total int64
@@ -150,21 +168,24 @@ func (r *BookingRepository) toModel(booking *entity.Booking) *model.BookingModel
 
 func (r *BookingRepository) toEntity(m *model.BookingModel) *entity.Booking {
 	b := &entity.Booking{
-		ID:            m.ID,
-		CustomerID:    m.CustomerID,
-		ServiceID:     m.ServiceID,
-		ProviderID:    m.ProviderID,
-		ScheduleDate:  m.ScheduleDate,
-		ScheduleTime:  m.ScheduleTime,
-		Address:       m.Address,
-		Notes:         m.Notes,
-		SubTotal:      m.SubTotal,
-		PlatformFee:   m.PlatformFee,
-		Total:         m.Total,
-		PaymentMethod: m.PaymentMethod,
-		Status:        m.Status,
-		CreatedAt:     m.CreatedAt,
-		UpdatedAt:     m.UpdatedAt,
+		ID:             m.ID,
+		CustomerID:     m.CustomerID,
+		ServiceID:      m.ServiceID,
+		ProviderID:     m.ProviderID,
+		ScheduleDate:   m.ScheduleDate,
+		ScheduleTime:   m.ScheduleTime,
+		Address:        m.Address,
+		Notes:          m.Notes,
+		SubTotal:       m.SubTotal,
+		PlatformFee:    m.PlatformFee,
+		Total:          m.Total,
+		PaymentMethod:  m.PaymentMethod,
+		Status:         m.Status,
+		CancellationID: m.CancellationID,
+		CancelledBy:    m.CancelledBy,
+		CancelledAt:    m.CancelledAt,
+		CreatedAt:      m.CreatedAt,
+		UpdatedAt:      m.UpdatedAt,
 	}
 
 	for _, addon := range m.BookingAddOns {

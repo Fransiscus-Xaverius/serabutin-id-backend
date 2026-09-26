@@ -64,7 +64,7 @@ func main() {
 	db.Exec(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS author_role varchar(20) DEFAULT 'customer'`)
 	db.Exec(`UPDATE reviews SET author_id = customer_id WHERE author_id = 0 OR author_id IS NULL`)
 	db.Exec(`UPDATE reviews SET author_role = 'customer' WHERE author_role = '' OR author_role IS NULL`)
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
@@ -93,7 +93,7 @@ func main() {
 	profileHandler := handler.NewProfileHandler(profileUsecase)
 	serviceUsecase := usecase.NewServiceUsecase(serviceRepo, userRepo, reviewRepo)
 	serviceHandler := handler.NewServiceHandler(serviceUsecase, profileUsecase, storageRepo)
-	bookingUsecase := usecase.NewBookingUsecase(bookingRepo, serviceRepo, userRepo, cfg.PlatformFee)
+	bookingUsecase := usecase.NewBookingUsecase(bookingRepo, serviceRepo, userRepo, cfg.PlatformFee, cfg.CancellationFeeCustomer, cfg.CancellationFeeProvider, gormrepo.NewCancellationRepository(db))
 	bookingHandler := handler.NewBookingHandler(bookingUsecase, profileUsecase, serviceUsecase)
 	bidRepo := gormrepo.NewBidRepository(db)
 	bidUsecase := usecase.NewBidUsecase(bidRepo, serviceRepo, bookingRepo, userRepo, cfg.PlatformFee)
@@ -105,6 +105,13 @@ func main() {
 	userUsecase := usecase.NewUserUsecase(userRepo)
 	statsUsecase := usecase.NewStatsUsecase(userRepo, serviceRepo, bookingRepo)
 	userHandler := handler.NewUserHandler(userUsecase, statsUsecase, reviewUsecase)
+	notificationRepo := gormrepo.NewNotificationRepository(db)
+	notificationUsecase := usecase.NewNotificationUsecase(notificationRepo)
+	notificationHandler := handler.NewNotificationHandler(notificationUsecase)
+	bookingUsecase.SetNotifier(notificationUsecase)
+	bidUsecase.SetNotifier(notificationUsecase)
+	cancelRepo := gormrepo.NewCancellationRepository(db)
+	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
 	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)
@@ -196,6 +203,16 @@ func main() {
 	protected.Patch("/bookings/:id/cancel", bookingHandler.Cancel)
 	protected.Post("/reviews", reviewHandler.Create)
 	protected.Post("/upload", uploadHandler.Upload)
+	protected.Get("/notifications", notificationHandler.List)
+	protected.Get("/notifications/stream", notificationHandler.Stream)
+	protected.Patch("/notifications/:id/read", notificationHandler.MarkRead)
+
+	admin := api.Group("/admin")
+	admin.Use(authMiddleware.Authenticate())
+	admin.Use(rateLimiter.Limit())
+	admin.Use(middleware.RequireAdmin(profileUsecase))
+	admin.Get("/cancellations", adminHandler.ListCancellations)
+	admin.Get("/notifications", adminHandler.ListNotifications)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 
