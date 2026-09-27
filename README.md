@@ -13,10 +13,20 @@ Main backend API service for [Serabutin.id](https://serabutin.id) — marketplac
 ## Quick Start (Docker Compose)
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-The API will be available at the port configured in `docker-compose.yml`.
+This starts three containers:
+
+| Container | Host port | Purpose |
+|-----------|-----------|---------|
+| `serabutin-api` | `3000` | API (`GET /health` for a quick check) |
+| `serabutin-postgres` | `5432` | PostgreSQL (`postgres/postgres`, db `serabutin`) |
+| `serabutin-redis` | `6379` | Redis |
+
+Use `--build` after pulling Go changes. Auto-migrations run on boot
+(including the reviews `author_id`/`author_role` backfill); data persists in
+the `postgres_data` volume — `docker compose down -v` wipes it.
 
 ## Local Development
 
@@ -28,10 +38,11 @@ The API will be available at the port configured in `docker-compose.yml`.
 
 ### Setup
 
-1. Start infrastructure:
+1. Start infrastructure (Postgres + Redis only — the compose API service
+   also binds :3000, so don't run it together with `go run`):
 
 ```bash
-docker compose up -d
+docker compose up -d postgres redis
 ```
 
 2. Configure environment:
