@@ -11,15 +11,30 @@ import (
 	"github.com/serabutin/serabutin-id-backend/pkg/response"
 )
 
-// AdminHandler exposes read-only JSON for the future admin UI (ticket 07).
-// No pages in this phase; role guard is applied at the route group level.
+// AdminHandler exposes read-only JSON for the admin UI.
+// Role guard is applied at the route group level.
 type AdminHandler struct {
 	cancelRepo     repository.CancellationRepository
 	notificationUC *usecase.NotificationUsecase
+	bookingRepo    repository.BookingRepository
+	userUsecase    *usecase.ProfileUsecase
+	serviceUsecase *usecase.ServiceUsecase
 }
 
-func NewAdminHandler(cancelRepo repository.CancellationRepository, notificationUC *usecase.NotificationUsecase) *AdminHandler {
-	return &AdminHandler{cancelRepo: cancelRepo, notificationUC: notificationUC}
+func NewAdminHandler(
+	cancelRepo repository.CancellationRepository,
+	notificationUC *usecase.NotificationUsecase,
+	bookingRepo repository.BookingRepository,
+	userUsecase *usecase.ProfileUsecase,
+	serviceUsecase *usecase.ServiceUsecase,
+) *AdminHandler {
+	return &AdminHandler{
+		cancelRepo:     cancelRepo,
+		notificationUC: notificationUC,
+		bookingRepo:    bookingRepo,
+		userUsecase:    userUsecase,
+		serviceUsecase: serviceUsecase,
+	}
 }
 
 func (h *AdminHandler) ListCancellations(c fiber.Ctx) error {
@@ -39,6 +54,7 @@ func (h *AdminHandler) ListCancellations(c fiber.Ctx) error {
 	for i, x := range items {
 		data[i] = dto.CancellationResponse{
 			ID:              x.ID,
+			BookingID:       x.BookingID,
 			CancelledBy:     x.CancelledBy,
 			CancelledByRole: x.CancelledByRole,
 			Reason:          x.Reason,
@@ -99,4 +115,49 @@ func (h *AdminHandler) ListNotifications(c fiber.Ctx) error {
 			TotalPages: totalPages,
 		},
 	})
+}
+
+// GetBooking returns full booking context for admins (bypasses the
+// participant check of the user-facing endpoint). Read-only.
+func (h *AdminHandler) GetBooking(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
+	}
+	booking, err := h.bookingRepo.FindByID(c.Context(), uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	resp := dto.BookingResponse{
+		ID:             booking.ID,
+		ScheduleDate:   booking.ScheduleDate.Format("2006-01-02"),
+		ScheduleTime:   booking.ScheduleTime,
+		Address:        booking.Address,
+		Notes:          booking.Notes,
+		SubTotal:       booking.SubTotal,
+		PlatformFee:    booking.PlatformFee,
+		Total:          booking.Total,
+		PaymentMethod:  booking.PaymentMethod,
+		Status:         booking.Status,
+		CancellationID: booking.CancellationID,
+		CancelledBy:    booking.CancelledBy,
+		CreatedAt:      booking.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if booking.CancelledAt != nil {
+		s := booking.CancelledAt.Format("2006-01-02T15:04:05Z")
+		resp.CancelledAt = &s
+	}
+	if customer, _ := h.userUsecase.GetProfile(c.Context(), booking.CustomerID); customer != nil {
+		resp.Customer = &dto.BookingUserInfo{ID: customer.ID, Name: customer.Name}
+	}
+	if provider, _ := h.userUsecase.GetProfile(c.Context(), booking.ProviderID); provider != nil {
+		resp.Provider = &dto.BookingUserInfo{ID: provider.ID, Name: provider.Name}
+	}
+	if service, _ := h.serviceUsecase.GetService(c.Context(), booking.ServiceID); service != nil {
+		resp.Service = &dto.BookingServiceInfo{ID: service.ID, Title: service.Title}
+	}
+	for _, addon := range booking.BookingAddOns {
+		resp.AddOns = append(resp.AddOns, dto.BookingAddOnResponse{Name: addon.Name, Price: addon.Price})
+	}
+	return response.Success(c, fiber.StatusOK, resp)
 }

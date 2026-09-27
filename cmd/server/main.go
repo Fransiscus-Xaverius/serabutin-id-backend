@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -111,7 +112,8 @@ func main() {
 	bookingUsecase.SetNotifier(notificationUsecase)
 	bidUsecase.SetNotifier(notificationUsecase)
 	cancelRepo := gormrepo.NewCancellationRepository(db)
-	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase)
+	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase)
+	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
 	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)
@@ -213,6 +215,7 @@ func main() {
 	admin.Use(middleware.RequireAdmin(profileUsecase))
 	admin.Get("/cancellations", adminHandler.ListCancellations)
 	admin.Get("/notifications", adminHandler.ListNotifications)
+	admin.Get("/bookings/:id", adminHandler.GetBooking)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 

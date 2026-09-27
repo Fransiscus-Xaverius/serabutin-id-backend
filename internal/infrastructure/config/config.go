@@ -33,6 +33,8 @@ type Config struct {
 	CancellationFeeCustomer int64
 	CancellationFeeProvider int64
 
+	AdminEmails []string
+
 	StorageDriver      string
 	StorageLocalPath   string
 	StorageLocalURL    string
@@ -128,6 +130,11 @@ func Load() (*Config, error) {
 	cfg.PlatformFee = viper.GetInt64("PLATFORM_FEE")
 	cfg.CancellationFeeCustomer = viper.GetInt64("CANCELLATION_FEE_CUSTOMER")
 	cfg.CancellationFeeProvider = viper.GetInt64("CANCELLATION_FEE_PROVIDER")
+	for _, e := range strings.Split(viper.GetString("ADMIN_EMAILS"), ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			cfg.AdminEmails = append(cfg.AdminEmails, strings.ToLower(e))
+		}
+	}
 
 	cfg.StorageDriver = viper.GetString("STORAGE_DRIVER")
 	cfg.StorageLocalPath = viper.GetString("STORAGE_LOCAL_PATH")

@@ -17,6 +17,7 @@ type CancelBookingRequest struct {
 
 type CancellationResponse struct {
 	ID              uint   `json:"id"`
+	BookingID       uint   `json:"booking_id"`
 	CancelledBy     uint   `json:"cancelled_by"`
 	CancelledByRole string `json:"cancelled_by_role"`
 	Reason          string `json:"reason"`

@@ -243,6 +243,7 @@ func (h *BookingHandler) Cancel(c fiber.Ctx) error {
 	if cancellation != nil {
 		resp.Cancellation = &dto.CancellationResponse{
 			ID:              cancellation.ID,
+			BookingID:       cancellation.BookingID,
 			CancelledBy:     cancellation.CancelledBy,
 			CancelledByRole: cancellation.CancelledByRole,
 			Reason:          cancellation.Reason,
