@@ -100,6 +100,43 @@ func TestRateLimiter_Limit_OverLimit_Returns429(t *testing.T) {
 	assert.NotEmpty(t, retryAfter)
 }
 
+func TestRateLimiter_Limit_WindowNotExtendedByLaterRequests(t *testing.T) {
+	t.Parallel()
+
+	client := setupTestRedisForMiddleware(t)
+	rl := NewRateLimiter(client, 2, 1500*time.Millisecond)
+	app := setupRateLimitTestApp(t, rl)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	time.Sleep(400 * time.Millisecond)
+
+	req = httptest.NewRequest("GET", "/test", nil)
+	resp, err = app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Rejected request: must not move the window end.
+	req = httptest.NewRequest("GET", "/test", nil)
+	resp, err = app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 429, resp.StatusCode)
+
+	// Past the original window (t=1.5s since first request), a new window
+	// must have started even though the last request happened at t=0.6s.
+	time.Sleep(1000 * time.Millisecond)
+
+	req = httptest.NewRequest("GET", "/test", nil)
+	resp, err = app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
 func TestRateLimiter_Limit_DifferentIP_NotAffected(t *testing.T) {
 	t.Parallel()
 
