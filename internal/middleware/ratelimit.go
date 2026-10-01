@@ -34,9 +34,13 @@ func (rl *RateLimiter) Limit() fiber.Handler {
 
 		key := fmt.Sprintf("ratelimit:%s", ip)
 
+		// Fixed window: the TTL is set only when the window is created.
+		// Re-setting it on every request would extend the window under
+		// continuous traffic (e.g. 30s polling), so the counter could
+		// accumulate past the limit and never reset.
 		pipe := rl.client.Pipeline()
+		pipe.SetNX(ctx, key, 0, rl.window)
 		incr := pipe.Incr(ctx, key)
-		pipe.Expire(ctx, key, rl.window)
 
 		_, err := pipe.Exec(ctx)
 		if err != nil {
