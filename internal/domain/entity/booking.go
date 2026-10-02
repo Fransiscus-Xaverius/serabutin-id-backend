@@ -7,9 +7,9 @@ type Booking struct {
 	CustomerID     uint
 	ServiceID      uint
 	ProviderID     uint
-	ScheduleDate   time.Time
-	ScheduleTime   string
-	Address        string
+	ScheduleDate   *time.Time
+	ScheduleTime   *string
+	Address        *string
 	Notes          string
 	SubTotal       int64
 	PlatformFee    int64

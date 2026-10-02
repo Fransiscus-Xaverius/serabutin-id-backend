@@ -19,6 +19,28 @@ func NewBidRepository(db *gorm.DB) *BidRepository {
 	return &BidRepository{db: db}
 }
 
+func (r *BidRepository) CountByStatus(ctx context.Context, providerID uint) (map[string]int64, error) {
+	var rows []struct {
+		Status string
+		Total  int64
+	}
+	err := r.db.WithContext(ctx).
+		Model(&model.BidModel{}).
+		Select("status, COUNT(*) AS total").
+		Where("provider_id = ?", providerID).
+		Group("status").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+
+	counts := map[string]int64{"pending": 0, "accepted": 0, "rejected": 0}
+	for _, row := range rows {
+		counts[row.Status] = row.Total
+	}
+	return counts, nil
+}
+
 func (r *BidRepository) Create(ctx context.Context, bid *entity.Bid) error {
 	m := &model.BidModel{
 		ServiceID:  bid.ServiceID,

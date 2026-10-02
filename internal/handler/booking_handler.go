@@ -144,7 +144,21 @@ func (h *BookingHandler) Accept(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
 	}
 
-	booking, err := h.bookingUsecase.AcceptBooking(c.Context(), userID, uint(id))
+	// Body is optional: direct bookings already carry a schedule, while
+	// bid-derived bookings require the provider to supply one here.
+	var req dto.AcceptBookingRequest
+	if len(c.Body()) > 0 {
+		if err := c.Bind().Body(&req); err != nil {
+			return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_REQUEST", "invalid request body"))
+		}
+		if validationErrors := validator.Validate(req); validationErrors != nil {
+			apiErr := apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed")
+			apiErr.Details = validationErrors
+			return apierror.GlobalErrorHandler(c, apiErr)
+		}
+	}
+
+	booking, err := h.bookingUsecase.AcceptBooking(c.Context(), userID, uint(id), &req)
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
@@ -281,7 +295,6 @@ func (h *BookingHandler) GetAvailableSlots(c fiber.Ctx) error {
 func (h *BookingHandler) toBookingResponse(ctx context.Context, booking *entity.Booking) dto.BookingResponse {
 	resp := dto.BookingResponse{
 		ID:             booking.ID,
-		ScheduleDate:   booking.ScheduleDate.Format("2006-01-02"),
 		ScheduleTime:   booking.ScheduleTime,
 		Address:        booking.Address,
 		Notes:          booking.Notes,
@@ -293,6 +306,10 @@ func (h *BookingHandler) toBookingResponse(ctx context.Context, booking *entity.
 		CancellationID: booking.CancellationID,
 		CancelledBy:    booking.CancelledBy,
 		CreatedAt:      booking.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if booking.ScheduleDate != nil {
+		s := booking.ScheduleDate.Format("2006-01-02")
+		resp.ScheduleDate = &s
 	}
 	if booking.CancelledAt != nil {
 		s := booking.CancelledAt.Format("2006-01-02T15:04:05Z")
@@ -310,8 +327,9 @@ func (h *BookingHandler) toBookingResponse(ctx context.Context, booking *entity.
 	service, _ := h.serviceUsecase.GetService(ctx, booking.ServiceID)
 	if service != nil {
 		resp.Service = &dto.BookingServiceInfo{
-			ID:    service.ID,
-			Title: service.Title,
+			ID:          service.ID,
+			Title:       service.Title,
+			ServiceType: service.ServiceType,
 		}
 	}
 

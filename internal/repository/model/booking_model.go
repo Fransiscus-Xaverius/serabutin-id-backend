@@ -7,9 +7,9 @@ type BookingModel struct {
 	CustomerID     uint                `gorm:"index;not null"`
 	ServiceID      uint                `gorm:"index;not null"`
 	ProviderID     uint                `gorm:"index;not null"`
-	ScheduleDate   time.Time           `gorm:"not null"`
-	ScheduleTime   string              `gorm:"size:5;not null"`
-	Address        string              `gorm:"size:255;not null"`
+	ScheduleDate   *time.Time          `gorm:"null"`
+	ScheduleTime   *string             `gorm:"size:5;null"`
+	Address        *string             `gorm:"size:255;null"`
 	Notes          string              `gorm:"size:500"`
 	SubTotal       int64               `gorm:"not null"`
 	PlatformFee    int64               `gorm:"not null"`
