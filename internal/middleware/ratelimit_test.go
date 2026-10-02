@@ -137,6 +137,41 @@ func TestRateLimiter_Limit_WindowNotExtendedByLaterRequests(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 }
 
+// Spec 010 follow-up: a key left WITHOUT a TTL (legacy writer, or the
+// create/increment race) must be re-armed, otherwise the counter never
+// resets and the client is locked out permanently.
+func TestRateLimiter_Limit_ReArmsMissingTTL(t *testing.T) {
+	t.Parallel()
+
+	client := setupTestRedisForMiddleware(t)
+	rl := NewRateLimiter(client, 3, time.Minute)
+	app := setupRateLimitTestApp(t, rl)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	var key string
+	keys, err := client.Keys(context.Background(), "ratelimit:*").Result()
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	key = keys[0]
+
+	// Simulate the raced/legacy state: counter above the limit, no expiry.
+	require.NoError(t, client.Set(context.Background(), key, 999, 0).Err())
+
+	req = httptest.NewRequest("GET", "/test", nil)
+	resp, err = app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 429, resp.StatusCode)
+
+	ttl, err := client.TTL(context.Background(), key).Result()
+	require.NoError(t, err)
+	assert.Greater(t, ttl, time.Duration(0), "TTL must be re-armed, not -1")
+	assert.LessOrEqual(t, ttl, time.Minute)
+}
+
 func TestRateLimiter_Limit_DifferentIP_NotAffected(t *testing.T) {
 	t.Parallel()
 
