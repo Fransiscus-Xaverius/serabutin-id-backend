@@ -20,10 +20,18 @@ type BidResponse struct {
 	ServiceDescription string           `json:"service_description,omitempty"`
 	ServiceLocation    string           `json:"service_location,omitempty"`
 	ServiceImage       string           `json:"service_image,omitempty"`
+	ServiceType        string           `json:"service_type,omitempty"`
 	Customer           *BookingUserInfo `json:"customer,omitempty"`
+}
+
+type BidStatusCounts struct {
+	Pending  int64 `json:"pending"`
+	Accepted int64 `json:"accepted"`
+	Rejected int64 `json:"rejected"`
 }
 
 type BidListResponse struct {
 	Data       []BidResponse  `json:"data"`
 	Pagination PaginationMeta `json:"pagination"`
+	Counts     BidStatusCounts `json:"counts"`
 }

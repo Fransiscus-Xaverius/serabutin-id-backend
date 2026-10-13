@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
@@ -20,6 +21,13 @@ func (f *cancelFakeBookingRepo) FindByID(ctx context.Context, id uint) (*entity.
 }
 func (f *cancelFakeBookingRepo) UpdateStatus(ctx context.Context, id uint, status string) error {
 	f.bookings[id].Status = status
+	return nil
+}
+func (f *cancelFakeBookingRepo) UpdateSchedule(ctx context.Context, id uint, scheduleDate time.Time, scheduleTime string, address string) error {
+	b := f.bookings[id]
+	b.ScheduleDate = &scheduleDate
+	b.ScheduleTime = &scheduleTime
+	b.Address = &address
 	return nil
 }
 func (f *cancelFakeBookingRepo) UpdateCancel(ctx context.Context, id uint, cancellationID uint, cancelledBy uint) error {

@@ -67,6 +67,21 @@ func (r *BookingRepository) UpdateStatus(ctx context.Context, id uint, status st
 	return nil
 }
 
+func (r *BookingRepository) UpdateSchedule(ctx context.Context, id uint, scheduleDate time.Time, scheduleTime string, address string) error {
+	result := r.db.WithContext(ctx).Model(&model.BookingModel{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"schedule_date": scheduleDate,
+		"schedule_time": scheduleTime,
+		"address":       address,
+	})
+	if result.Error != nil {
+		return apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", result.Error.Error())
+	}
+	if result.RowsAffected == 0 {
+		return apperror.NewDomainError(apperror.ErrBookingNotFound, "BOOKING_NOT_FOUND", "booking not found")
+	}
+	return nil
+}
+
 func (r *BookingRepository) UpdateCancel(ctx context.Context, id uint, cancellationID uint, cancelledBy uint) error {
 	now := time.Now()
 	updates := map[string]interface{}{

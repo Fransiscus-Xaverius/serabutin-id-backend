@@ -34,12 +34,16 @@ func (rl *RateLimiter) Limit() fiber.Handler {
 
 		key := fmt.Sprintf("ratelimit:%s", ip)
 
-		pipe := rl.client.Pipeline()
-		incr := pipe.Incr(ctx, key)
-		pipe.Expire(ctx, key, rl.window)
-
-		_, err := pipe.Exec(ctx)
-		if err != nil {
+		// Fixed window: the TTL is armed when the key is created and never
+		// extended afterwards. ExpireNX (set expiry only when none exists)
+		// also heals keys left without a TTL by earlier versions or by the
+		// race between creation and increment — otherwise the counter would
+		// accumulate forever and lock the client out permanently.
+		incr := rl.client.Incr(ctx, key)
+		if incr.Err() != nil {
+			return c.Next()
+		}
+		if err := rl.client.ExpireNX(ctx, key, rl.window).Err(); err != nil {
 			return c.Next()
 		}
 

@@ -55,6 +55,15 @@ func (f *fakeBidRepo) FindByServiceID(ctx context.Context, serviceID uint) ([]*e
 func (f *fakeBidRepo) FindByProviderID(ctx context.Context, providerID uint, filter repository.BidFilter) ([]*entity.Bid, int64, error) {
 	return nil, 0, nil
 }
+func (f *fakeBidRepo) CountByStatus(ctx context.Context, providerID uint) (map[string]int64, error) {
+	counts := map[string]int64{"pending": 0, "accepted": 0, "rejected": 0}
+	for _, b := range f.bids {
+		if b.ProviderID == providerID {
+			counts[b.Status]++
+		}
+	}
+	return counts, nil
+}
 func (f *fakeBidRepo) UpdateStatus(ctx context.Context, id uint, status string) error {
 	f.calledUpdateStatus++
 	b, ok := f.bids[id]
@@ -93,6 +102,9 @@ func (f *fakeBookingRepo) FindByID(ctx context.Context, id uint) (*entity.Bookin
 	return nil, nil
 }
 func (f *fakeBookingRepo) UpdateStatus(ctx context.Context, id uint, status string) error {
+	return nil
+}
+func (f *fakeBookingRepo) UpdateSchedule(ctx context.Context, id uint, scheduleDate time.Time, scheduleTime string, address string) error {
 	return nil
 }
 func (f *fakeBookingRepo) UpdateCancel(ctx context.Context, id uint, cancellationID uint, cancelledBy uint) error {

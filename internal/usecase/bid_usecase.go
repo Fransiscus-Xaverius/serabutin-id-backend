@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
@@ -144,9 +143,6 @@ func (uc *BidUsecase) completeAccept(ctx context.Context, bid *entity.Bid, servi
 		CustomerID:    service.ProviderID,
 		ServiceID:     bid.ServiceID,
 		ProviderID:    bid.ProviderID,
-		ScheduleDate:  time.Now().Add(24 * time.Hour),
-		ScheduleTime:  "09:00",
-		Address:       "",
 		Notes:         bid.Notes,
 		SubTotal:      bid.Price,
 		PlatformFee:   uc.platformFee,
@@ -179,13 +175,20 @@ func (uc *BidUsecase) GetBidsForService(ctx context.Context, userID uint, servic
 	return bids, nil
 }
 
-func (uc *BidUsecase) GetMyBids(ctx context.Context, providerID uint, filter repository.BidFilter) ([]*entity.Bid, int64, error) {
+func (uc *BidUsecase) GetMyBids(ctx context.Context, providerID uint, filter repository.BidFilter) ([]*entity.Bid, int64, map[string]int64, error) {
 	bids, total, err := uc.bidRepo.FindByProviderID(ctx, providerID, filter)
 	if err != nil {
 		log.Printf("[BidUsecase.GetMyBids] find error: %v", err)
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	return bids, total, nil
+
+	counts, err := uc.bidRepo.CountByStatus(ctx, providerID)
+	if err != nil {
+		log.Printf("[BidUsecase.GetMyBids] count error: %v", err)
+		return nil, 0, nil, err
+	}
+
+	return bids, total, counts, nil
 }
 
 func (uc *BidUsecase) AcceptBid(ctx context.Context, userID uint, bidID uint) (*entity.Booking, error) {
@@ -221,9 +224,6 @@ func (uc *BidUsecase) AcceptBid(ctx context.Context, userID uint, bidID uint) (*
 		CustomerID:    userID,
 		ServiceID:     bid.ServiceID,
 		ProviderID:    bid.ProviderID,
-		ScheduleDate:  time.Now().Add(24 * time.Hour),
-		ScheduleTime:  "09:00",
-		Address:       "",
 		Notes:         bid.Notes,
 		SubTotal:      bid.Price,
 		PlatformFee:   uc.platformFee,

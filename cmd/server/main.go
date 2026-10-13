@@ -65,6 +65,11 @@ func main() {
 	db.Exec(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS author_role varchar(20) DEFAULT 'customer'`)
 	db.Exec(`UPDATE reviews SET author_id = customer_id WHERE author_id = 0 OR author_id IS NULL`)
 	db.Exec(`UPDATE reviews SET author_role = 'customer' WHERE author_role = '' OR author_role IS NULL`)
+	// Bid-derived bookings have no schedule until the provider accepts them;
+	// relax the legacy NOT NULL constraints before AutoMigrate runs.
+	db.Exec(`ALTER TABLE bookings ALTER COLUMN schedule_date DROP NOT NULL`)
+	db.Exec(`ALTER TABLE bookings ALTER COLUMN schedule_time DROP NOT NULL`)
+	db.Exec(`ALTER TABLE bookings ALTER COLUMN address DROP NOT NULL`)
 	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
