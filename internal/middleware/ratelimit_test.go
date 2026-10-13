@@ -194,3 +194,28 @@ func TestRateLimiter_Limit_DifferentIP_NotAffected(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 }
+
+// The window must be fixed, not sliding: trickle traffic (e.g. SSE
+// reconnects, status polls) must not keep the counter alive forever.
+// limit=2, window=4s: hit at t≈0, t≈3, then t≈5. Fixed windows expired at
+// t≈4, so the t≈5 hit starts a new window (200). A sliding expiry would
+// 429 it as the 3rd hit of an extended window.
+func TestRateLimiter_WindowDoesNotSlide(t *testing.T) {
+	client := setupTestRedisForMiddleware(t)
+	rl := NewRateLimiter(client, 2, 4*time.Second)
+	rl.keyGenerator = func(c fiber.Ctx) string { return "sliding-probe" }
+	app := setupRateLimitTestApp(t, rl)
+
+	hit := func() int {
+		req := httptest.NewRequest("GET", "/test", nil)
+		resp, err := app.Test(req)
+		require.NoError(t, err)
+		return resp.StatusCode
+	}
+
+	assert.Equal(t, 200, hit())
+	time.Sleep(3 * time.Second)
+	assert.Equal(t, 200, hit())
+	time.Sleep(2 * time.Second)
+	assert.Equal(t, 200, hit(), "window must have expired; steady trickle must not accumulate")
+}

@@ -142,6 +142,7 @@ func (h *NotificationHandler) Stream(c fiber.Ctx) error {
 func toNotificationResponse(n *entity.Notification) dto.NotificationResponse {
 	resp := dto.NotificationResponse{
 		ID:        n.ID,
+		UserID:    n.UserID,
 		Type:      n.Type,
 		Title:     n.Title,
 		Body:      n.Body,
