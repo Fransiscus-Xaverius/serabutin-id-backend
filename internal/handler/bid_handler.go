@@ -123,7 +123,7 @@ func (h *BidHandler) GetMyBids(c fiber.Ctx) error {
 		Limit:  limit,
 	}
 
-	bids, total, err := h.bidUsecase.GetMyBids(c.Context(), userID, filter)
+	bids, total, counts, err := h.bidUsecase.GetMyBids(c.Context(), userID, filter)
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
@@ -145,6 +145,7 @@ func (h *BidHandler) GetMyBids(c fiber.Ctx) error {
 			resp.ServiceCategory = service.Category
 			resp.ServiceDescription = service.Description
 			resp.ServiceLocation = service.ServiceAreas
+			resp.ServiceType = service.ServiceType
 			if len(service.Images) > 0 {
 				resp.ServiceImage = service.Images[0].URL
 			}
@@ -171,6 +172,11 @@ func (h *BidHandler) GetMyBids(c fiber.Ctx) error {
 			Total:      total,
 			TotalPages: totalPages,
 		},
+		Counts: dto.BidStatusCounts{
+			Pending:  counts["pending"],
+			Accepted: counts["accepted"],
+			Rejected: counts["rejected"],
+		},
 	})
 }
 
@@ -192,7 +198,6 @@ func (h *BidHandler) Accept(c fiber.Ctx) error {
 
 	resp := dto.BookingResponse{
 		ID:            booking.ID,
-		ScheduleDate:  booking.ScheduleDate.Format("2006-01-02"),
 		ScheduleTime:  booking.ScheduleTime,
 		SubTotal:      booking.SubTotal,
 		PlatformFee:   booking.PlatformFee,
@@ -200,6 +205,10 @@ func (h *BidHandler) Accept(c fiber.Ctx) error {
 		PaymentMethod: booking.PaymentMethod,
 		Status:        booking.Status,
 		CreatedAt:     booking.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if booking.ScheduleDate != nil {
+		s := booking.ScheduleDate.Format("2006-01-02")
+		resp.ScheduleDate = &s
 	}
 
 	return response.Success(c, fiber.StatusOK, resp)

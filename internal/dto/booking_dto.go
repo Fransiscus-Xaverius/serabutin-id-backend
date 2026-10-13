@@ -10,6 +10,12 @@ type CreateBookingRequest struct {
 	PaymentMethod string `json:"payment_method" validate:"required,oneof=cash_on_service bank_transfer e_wallet"`
 }
 
+type AcceptBookingRequest struct {
+	ScheduleDate string `json:"schedule_date" validate:"omitempty,datetime=2006-01-02"`
+	ScheduleTime string `json:"schedule_time" validate:"omitempty,len=5"`
+	Address      string `json:"address" validate:"omitempty,max=255"`
+}
+
 type CancelBookingRequest struct {
 	Reason string `json:"reason" validate:"required,oneof=changed_mind found_other schedule_conflict no_response other"`
 	Detail string `json:"detail,omitempty" validate:"omitempty,max=500"`
@@ -31,9 +37,9 @@ type BookingResponse struct {
 	Customer       *BookingUserInfo       `json:"customer,omitempty"`
 	Service        *BookingServiceInfo    `json:"service,omitempty"`
 	Provider       *BookingUserInfo       `json:"provider,omitempty"`
-	ScheduleDate   string                 `json:"schedule_date"`
-	ScheduleTime   string                 `json:"schedule_time"`
-	Address        string                 `json:"address"`
+	ScheduleDate   *string                `json:"schedule_date"`
+	ScheduleTime   *string                `json:"schedule_time"`
+	Address        *string                `json:"address"`
 	Notes          string                 `json:"notes,omitempty"`
 	AddOns         []BookingAddOnResponse `json:"add_ons"`
 	SubTotal       int64                  `json:"sub_total"`
@@ -54,8 +60,9 @@ type BookingUserInfo struct {
 }
 
 type BookingServiceInfo struct {
-	ID    uint   `json:"id"`
-	Title string `json:"title"`
+	ID          uint   `json:"id"`
+	Title       string `json:"title"`
+	ServiceType string `json:"service_type,omitempty"`
 }
 
 type BookingAddOnResponse struct {

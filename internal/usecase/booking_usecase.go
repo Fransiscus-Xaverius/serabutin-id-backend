@@ -116,9 +116,9 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 		CustomerID:    customerID,
 		ServiceID:     service.ID,
 		ProviderID:    service.ProviderID,
-		ScheduleDate:  scheduleDate,
-		ScheduleTime:  req.ScheduleTime,
-		Address:       req.Address,
+		ScheduleDate:  &scheduleDate,
+		ScheduleTime:  &req.ScheduleTime,
+		Address:       &req.Address,
 		Notes:         req.Notes,
 		SubTotal:      subTotal,
 		PlatformFee:   uc.platformFee,
@@ -160,7 +160,7 @@ func (uc *BookingUsecase) GetMyBookings(ctx context.Context, userID uint, role s
 	return bookings, total, nil
 }
 
-func (uc *BookingUsecase) AcceptBooking(ctx context.Context, providerID uint, id uint) (*entity.Booking, error) {
+func (uc *BookingUsecase) AcceptBooking(ctx context.Context, providerID uint, id uint, req *dto.AcceptBookingRequest) (*entity.Booking, error) {
 	booking, err := uc.bookingRepo.FindByID(ctx, id)
 	if err != nil {
 		log.Printf("[BookingUsecase.AcceptBooking] find error: %v", err)
@@ -173,6 +173,32 @@ func (uc *BookingUsecase) AcceptBooking(ctx context.Context, providerID uint, id
 
 	if booking.Status != "pending" {
 		return nil, apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_TRANSITION", "can only accept pending bookings")
+	}
+
+	// Bookings created from an accepted bid carry no schedule/address (the
+	// bid flow has no such data). The provider must supply them here; direct
+	// bookings already have them from the customer's checkout form.
+	if booking.ScheduleDate == nil || booking.ScheduleTime == nil || booking.Address == nil {
+		if req == nil || req.ScheduleDate == "" || req.ScheduleTime == "" || req.Address == "" {
+			return nil, apperror.NewDomainError(apperror.ErrValidation, "VALIDATION_ERROR", "jadwal dan alamat wajib diisi untuk pesanan ini")
+		}
+
+		scheduleDate, err := parseScheduleDate(req.ScheduleDate)
+		if err != nil {
+			return nil, apperror.NewDomainError(apperror.ErrValidation, "INVALID_DATE", "invalid schedule date format, expected YYYY-MM-DD")
+		}
+		if _, err := time.Parse("15:04", req.ScheduleTime); err != nil {
+			return nil, apperror.NewDomainError(apperror.ErrValidation, "INVALID_TIME", "invalid schedule time format, expected HH:MM")
+		}
+
+		if err := uc.bookingRepo.UpdateSchedule(ctx, id, scheduleDate, req.ScheduleTime, req.Address); err != nil {
+			log.Printf("[BookingUsecase.AcceptBooking] update schedule error: %v", err)
+			return nil, err
+		}
+
+		booking.ScheduleDate = &scheduleDate
+		booking.ScheduleTime = &req.ScheduleTime
+		booking.Address = &req.Address
 	}
 
 	if err := uc.bookingRepo.UpdateStatus(ctx, id, "accepted"); err != nil {

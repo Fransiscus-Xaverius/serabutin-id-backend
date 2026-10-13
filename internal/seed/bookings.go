@@ -39,14 +39,15 @@ func generateBookings(customers []model.UserModel, services []model.ServiceModel
 
 		subTotal := service.BasePrice + addOnTotal
 		total := subTotal + platformFee
+		address := fmt.Sprintf("Jl. %s No. %d", randomItem(rng, []string{"Merdeka", "Sudirman", "Thamrin", "Gatot Subroto", "Asia Afrika", "Diponegoro", "Ahmad Yani", "Pahlawan", "Kemerdekaan", "Sukarno Hatta"}), rng.Intn(200)+1)
 
 		booking := model.BookingModel{
 			CustomerID:    customer.ID,
 			ServiceID:     service.ID,
 			ProviderID:    service.ProviderID,
-			ScheduleDate:  scheduleDate,
-			ScheduleTime:  scheduleTime,
-			Address:       fmt.Sprintf("Jl. %s No. %d", randomItem(rng, []string{"Merdeka", "Sudirman", "Thamrin", "Gatot Subroto", "Asia Afrika", "Diponegoro", "Ahmad Yani", "Pahlawan", "Kemerdekaan", "Sukarno Hatta"}), rng.Intn(200)+1),
+			ScheduleDate:  &scheduleDate,
+			ScheduleTime:  &scheduleTime,
+			Address:       &address,
 			Notes:         fmt.Sprintf("Tolong datang tepat waktu. Terima kasih."),
 			SubTotal:      subTotal,
 			PlatformFee:   platformFee,

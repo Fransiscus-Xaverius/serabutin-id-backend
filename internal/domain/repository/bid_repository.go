@@ -11,6 +11,7 @@ type BidRepository interface {
 	FindByID(ctx context.Context, id uint) (*entity.Bid, error)
 	FindByServiceID(ctx context.Context, serviceID uint) ([]*entity.Bid, error)
 	FindByProviderID(ctx context.Context, providerID uint, filter BidFilter) ([]*entity.Bid, int64, error)
+	CountByStatus(ctx context.Context, providerID uint) (map[string]int64, error)
 	UpdateStatus(ctx context.Context, id uint, status string) error
 	// AcceptIfPending atomically transitions a bid from pending → accepted.
 	// Returns ErrInvalidTransition when the bid is no longer pending
