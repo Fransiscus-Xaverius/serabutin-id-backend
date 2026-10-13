@@ -102,7 +102,7 @@ func main() {
 	bookingHandler := handler.NewBookingHandler(bookingUsecase, profileUsecase, serviceUsecase)
 	bidRepo := gormrepo.NewBidRepository(db)
 	bidUsecase := usecase.NewBidUsecase(bidRepo, serviceRepo, bookingRepo, userRepo, cfg.PlatformFee)
-	bidHandler := handler.NewBidHandler(bidUsecase, profileUsecase, serviceUsecase)
+	bidHandler := handler.NewBidHandler(bidUsecase, profileUsecase, serviceUsecase, storageRepo)
 	reviewUsecase := usecase.NewReviewUsecase(reviewRepo, bookingRepo, userRepo)
 	reviewHandler := handler.NewReviewHandler(reviewUsecase, profileUsecase)
 	introspectUsecase := usecase.NewIntrospectUsecase(tokenService, tokenRepo)
