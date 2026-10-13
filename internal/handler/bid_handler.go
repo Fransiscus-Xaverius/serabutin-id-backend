@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/internal/dto"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
@@ -14,16 +15,18 @@ import (
 )
 
 type BidHandler struct {
-	bidUsecase    *usecase.BidUsecase
-	userUsecase   *usecase.ProfileUsecase
+	bidUsecase     *usecase.BidUsecase
+	userUsecase    *usecase.ProfileUsecase
 	serviceUsecase *usecase.ServiceUsecase
+	storageRepo    repository.StorageRepository
 }
 
-func NewBidHandler(bidUsecase *usecase.BidUsecase, userUsecase *usecase.ProfileUsecase, serviceUsecase *usecase.ServiceUsecase) *BidHandler {
+func NewBidHandler(bidUsecase *usecase.BidUsecase, userUsecase *usecase.ProfileUsecase, serviceUsecase *usecase.ServiceUsecase, storageRepo repository.StorageRepository) *BidHandler {
 	return &BidHandler{
-		bidUsecase:    bidUsecase,
-		userUsecase:   userUsecase,
+		bidUsecase:     bidUsecase,
+		userUsecase:    userUsecase,
 		serviceUsecase: serviceUsecase,
+		storageRepo:    storageRepo,
 	}
 }
 
@@ -62,6 +65,30 @@ func (h *BidHandler) Create(c fiber.Ctx) error {
 	return response.Success(c, fiber.StatusCreated, resp)
 }
 
+func (h *BidHandler) resolveServiceImage(images []entity.ServiceImage) string {
+	for _, img := range images {
+		if img.URL != "" {
+			if h.storageRepo != nil {
+				return h.storageRepo.ResolveImageURL(img.URL)
+			}
+			return img.URL
+		}
+	}
+	return ""
+}
+
+func (h *BidHandler) fillServiceMetadata(resp *dto.BidResponse, service *entity.Service) {
+	if service == nil {
+		return
+	}
+	resp.ServiceTitle = service.Title
+	resp.ServiceCategory = service.Category
+	resp.ServiceDescription = service.Description
+	resp.ServiceLocation = service.ServiceAreas
+	resp.ServiceType = service.ServiceType
+	resp.ServiceImage = h.resolveServiceImage(service.Images)
+}
+
 func (h *BidHandler) GetByService(c fiber.Ctx) error {
 	userID := requestctx.GetUserID(c)
 	if userID == 0 {
@@ -74,6 +101,11 @@ func (h *BidHandler) GetByService(c fiber.Ctx) error {
 	}
 
 	bids, err := h.bidUsecase.GetBidsForService(c.Context(), userID, uint(serviceID))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	service, err := h.serviceUsecase.GetService(c.Context(), uint(serviceID))
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
@@ -93,6 +125,7 @@ func (h *BidHandler) GetByService(c fiber.Ctx) error {
 		if provider != nil {
 			resp.Provider = &dto.BookingUserInfo{ID: provider.ID, Name: provider.Name}
 		}
+		h.fillServiceMetadata(&resp, service)
 		data[i] = resp
 	}
 
@@ -141,14 +174,7 @@ func (h *BidHandler) GetMyBids(c fiber.Ctx) error {
 			UpdatedAt: bid.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 		if service != nil {
-			resp.ServiceTitle = service.Title
-			resp.ServiceCategory = service.Category
-			resp.ServiceDescription = service.Description
-			resp.ServiceLocation = service.ServiceAreas
-			resp.ServiceType = service.ServiceType
-			if len(service.Images) > 0 {
-				resp.ServiceImage = service.Images[0].URL
-			}
+			h.fillServiceMetadata(&resp, service)
 			if customer, err := h.userUsecase.GetProfile(c.Context(), service.ProviderID); err == nil {
 				resp.Customer = &dto.BookingUserInfo{
 					ID:   customer.ID,
