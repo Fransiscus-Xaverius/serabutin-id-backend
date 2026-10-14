@@ -82,7 +82,11 @@ func main() {
 	// already matches; safe no-op on fresh tables created wide by migrate).
 	db.Exec(`ALTER TABLE cancellations ALTER COLUMN policy_version TYPE varchar(32)`)
 	db.Exec(`ALTER TABLE cancellations ALTER COLUMN reason TYPE varchar(500)`)
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}); err != nil {
+	// Ticket 6: moderation flag for existing deployments created before the
+	// hidden column (AutoMigrate below only adds it on fresh tables).
+	db.Exec(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_reviews_hidden ON reviews (hidden)`)
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
@@ -134,7 +138,9 @@ func main() {
 	adminServiceUsecase := usecase.NewAdminServiceUsecase(serviceRepo)
 	adminBookingUsecase := usecase.NewAdminBookingUsecase(bookingRepo, cancelRepo)
 	adminBookingUsecase.SetNotifier(notificationUsecase)
+	adminReviewUsecase := usecase.NewAdminReviewUsecase(reviewRepo, gormrepo.NewReportRepository(db))
 	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo, adminUserUsecase, adminServiceUsecase, storageRepo, adminBookingUsecase)
+	adminHandler.SetAdminReviewUC(adminReviewUsecase)
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
@@ -250,6 +256,10 @@ func main() {
 	admin.Get("/services", adminHandler.ListServices)
 	admin.Get("/services/:id", adminHandler.GetService)
 	admin.Patch("/services/:id/status", adminHandler.SetServiceStatus)
+	admin.Get("/reviews", adminHandler.ListReviews)
+	admin.Patch("/reviews/:id/visibility", adminHandler.SetReviewVisibility)
+	admin.Get("/reports", adminHandler.ListReports)
+	admin.Patch("/reports/:id", adminHandler.ResolveReport)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 

@@ -15,6 +15,9 @@ type Review struct {
 	QualityRating       int
 	ValueRating         int
 	Comment             string
+	// Hidden marks a review concealed by admin moderation. Hidden rows are
+	// excluded from every public read and aggregate; the row is retained.
+	Hidden              bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }

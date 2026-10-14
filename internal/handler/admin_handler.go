@@ -26,6 +26,7 @@ type AdminHandler struct {
 	adminUserUC    *usecase.AdminUserUsecase
 	adminServiceUC *usecase.AdminServiceUsecase
 	adminBookingUC *usecase.AdminBookingUsecase
+	adminReviewUC  *usecase.AdminReviewUsecase
 	imageResolver  repository.StorageRepository
 }
 
@@ -53,6 +54,13 @@ func NewAdminHandler(
 		adminBookingUC: adminBookingUC,
 		imageResolver:  imageResolver,
 	}
+}
+
+// SetAdminReviewUC attaches the reviews/reports moderation usecase. Kept as
+// a setter (mirroring the notifier pattern) so the established constructor
+// shape — relied on by existing handler tests — stays stable.
+func (h *AdminHandler) SetAdminReviewUC(uc *usecase.AdminReviewUsecase) {
+	h.adminReviewUC = uc
 }
 
 func (h *AdminHandler) ListCancellations(c fiber.Ctx) error {
@@ -617,4 +625,172 @@ func (h *AdminHandler) toAdminServiceDetail(ctx context.Context, service *entity
 		})
 	}
 	return resp
+}
+
+// ListReviews returns the paginated admin reviews queue, hidden rows
+// included. Query: flagged=1 narrows to the hidden (flagged) queue,
+// hidden=true|false constrains to one side, page, limit (clamped to 50,
+// following the existing admin list pattern). Read-only.
+func (h *AdminHandler) ListReviews(c fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	filter := repository.AdminReviewFilter{Page: page, Limit: limit}
+	switch strings.TrimSpace(c.Query("hidden")) {
+	case "true":
+		hidden := true
+		filter.Hidden = &hidden
+	case "false":
+		hidden := false
+		filter.Hidden = &hidden
+	}
+	if strings.TrimSpace(c.Query("flagged")) == "1" {
+		filter.HiddenOnly = true
+		filter.Hidden = nil
+	}
+	reviews, total, err := h.adminReviewUC.ListReviews(c.Context(), filter)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	data := make([]dto.AdminReviewRow, len(reviews))
+	for i, r := range reviews {
+		data[i] = toAdminReviewRow(r)
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminReviewListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	})
+}
+
+// SetReviewVisibility hides (hidden=true) or restores (hidden=false) a
+// review. `reason` is mandatory; the audit middleware persists it
+// automatically. Hiding never deletes the row — public reads and aggregates
+// exclude hidden rows.
+func (h *AdminHandler) SetReviewVisibility(c fiber.Ctx) error {
+	var payload dto.AdminReviewVisibilityRequest
+	if err := c.Bind().JSON(&payload); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "hidden and reason are required"))
+	}
+	if strings.TrimSpace(payload.Reason) == "" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "reason is required"))
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid review ID"))
+	}
+	review, err := h.adminReviewUC.SetVisibility(c.Context(), uint(id), payload.Hidden)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, toAdminReviewRow(review))
+}
+
+// ListReports returns the paginated admin report queue, newest first.
+// Query: status (open|resolved|dismissed), target_type
+// (service|user|review|booking), page, limit (clamped to 50, following the
+// existing admin list pattern). Read-only.
+func (h *AdminHandler) ListReports(c fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	reports, total, err := h.adminReviewUC.ListReports(c.Context(), repository.ReportFilter{
+		Status:     strings.TrimSpace(c.Query("status")),
+		TargetType: strings.TrimSpace(c.Query("target_type")),
+		Page:       page,
+		Limit:      limit,
+	})
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	data := make([]dto.AdminReportRow, len(reports))
+	for i, r := range reports {
+		data[i] = toAdminReportRow(r)
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminReportListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	})
+}
+
+// ResolveReport moves an open report to resolved|dismissed (terminal).
+// `status` and `reason` are both mandatory; the audit middleware persists
+// the reason automatically. Resolving a non-open report returns 422.
+func (h *AdminHandler) ResolveReport(c fiber.Ctx) error {
+	var payload dto.AdminReportResolveRequest
+	if err := c.Bind().JSON(&payload); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "status and reason are required"))
+	}
+	if strings.TrimSpace(payload.Status) == "" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "status is required"))
+	}
+	if strings.TrimSpace(payload.Reason) == "" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "reason is required"))
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid report ID"))
+	}
+	report, err := h.adminReviewUC.ResolveReport(c.Context(), requestctx.GetUserID(c), uint(id), strings.TrimSpace(payload.Status))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, toAdminReportRow(report))
+}
+
+func toAdminReviewRow(r *entity.Review) dto.AdminReviewRow {
+	return dto.AdminReviewRow{
+		ID:         r.ID,
+		BookingID:  r.BookingID,
+		ServiceID:  r.ServiceID,
+		CustomerID: r.CustomerID,
+		ProviderID: r.ProviderID,
+		AuthorID:   r.AuthorID,
+		AuthorRole: r.AuthorRole,
+		Rating:     r.Rating,
+		Comment:    r.Comment,
+		Hidden:     r.Hidden,
+		CreatedAt:  r.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+}
+
+func toAdminReportRow(r *entity.Report) dto.AdminReportRow {
+	return dto.AdminReportRow{
+		ID:         r.ID,
+		ReporterID: r.ReporterID,
+		TargetType: r.TargetType,
+		TargetID:   r.TargetID,
+		Reason:     r.Reason,
+		Detail:     r.Detail,
+		Status:     r.Status,
+		ResolvedBy: r.ResolvedBy,
+		CreatedAt:  r.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
 }

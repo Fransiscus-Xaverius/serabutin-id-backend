@@ -15,6 +15,8 @@ type ReviewModel struct {
 	QualityRating       int       `gorm:"not null"`
 	ValueRating         int       `gorm:"not null"`
 	Comment             string    `gorm:"size:1000"`
+	// Hidden is set by admin moderation; public reads filter it out.
+	Hidden              bool      `gorm:"not null;default:false;index"`
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
