@@ -24,7 +24,7 @@ import (
 func newAdminUserTestApp(t *testing.T, repo repository.UserRepository) *fiber.App {
 	t.Helper()
 	uc := usecase.NewAdminUserUsecase(repo)
-	h := NewAdminHandler(nil, nil, nil, nil, nil, nil, uc)
+	h := NewAdminHandler(nil, nil, nil, nil, nil, nil, uc, nil, nil)
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		requestctx.SetUserID(c, 7)

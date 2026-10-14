@@ -207,6 +207,61 @@ func (r *ServiceRepository) SetStatus(ctx context.Context, id uint, status strin
 	return nil
 }
 
+// ListForAdmin serves the admin moderation queue: no implicit status gate,
+// optional comma-separated status allowlist, plus category and free-text
+// (title/description/category) filters. Newest first, stable by id.
+func (r *ServiceRepository) ListForAdmin(ctx context.Context, filter repository.ServiceFilter) ([]*entity.Service, int64, error) {
+	var models []model.ServiceModel
+	var total int64
+
+	query := r.db.WithContext(ctx).Model(&model.ServiceModel{})
+
+	if filter.Query != "" {
+		term := "%" + filter.Query + "%"
+		query = query.Where("(services.title ILIKE ? OR services.description ILIKE ? OR services.category ILIKE ?)", term, term, term)
+	}
+	if filter.Category != "" {
+		query = query.Where("services.category = ?", filter.Category)
+	}
+	if statuses := parseAdminStatusFilter(filter.Status); len(statuses) > 0 {
+		query = query.Where("services.status IN ?", statuses)
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+
+	offset := (filter.Page - 1) * filter.Limit
+	err := query.
+		Preload("Images", func(db *gorm.DB) *gorm.DB {
+			return db.Order("sort_order ASC")
+		}).
+		Preload("AddOns").
+		Order("services.created_at DESC").
+		Order("services.id DESC").
+		Offset(offset).
+		Limit(filter.Limit).
+		Find(&models).Error
+	if err != nil {
+		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+
+	return r.toEntities(models), total, nil
+}
+
+// parseAdminStatusFilter splits a comma-separated status allowlist
+// ("draft,pending") into trimmed non-empty values. Empty input means no
+// status constraint.
+func parseAdminStatusFilter(raw string) []string {
+	var out []string
+	for _, s := range strings.Split(raw, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func (r *ServiceRepository) toModel(service *entity.Service) *model.ServiceModel {
 	m := &model.ServiceModel{
 		ID:              service.ID,

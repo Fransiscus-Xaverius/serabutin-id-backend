@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/internal/dto"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
@@ -22,6 +24,8 @@ type AdminHandler struct {
 	serviceUsecase *usecase.ServiceUsecase
 	auditRepo      repository.AuditLogRepository
 	adminUserUC    *usecase.AdminUserUsecase
+	adminServiceUC *usecase.AdminServiceUsecase
+	imageResolver  repository.StorageRepository
 }
 
 func NewAdminHandler(
@@ -32,6 +36,8 @@ func NewAdminHandler(
 	serviceUsecase *usecase.ServiceUsecase,
 	auditRepo repository.AuditLogRepository,
 	adminUserUC *usecase.AdminUserUsecase,
+	adminServiceUC *usecase.AdminServiceUsecase,
+	imageResolver repository.StorageRepository,
 ) *AdminHandler {
 	return &AdminHandler{
 		cancelRepo:     cancelRepo,
@@ -41,6 +47,8 @@ func NewAdminHandler(
 		serviceUsecase: serviceUsecase,
 		auditRepo:      auditRepo,
 		adminUserUC:    adminUserUC,
+		adminServiceUC: adminServiceUC,
+		imageResolver:  imageResolver,
 	}
 }
 
@@ -391,4 +399,138 @@ func (h *AdminHandler) SetUserRole(c fiber.Ctx) error {
 		Status:    user.Status,
 		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	})
+}
+
+// ListServices returns the paginated moderation queue. Query: q (partial
+// match over title/description/category), category, status (comma-separated
+// allowlist, e.g. `draft` or `draft,pending`; empty means all), page, limit
+// (clamped to 50, following the existing admin list pattern). Bypasses the
+// public active-only gate via the admin usecase.
+func (h *AdminHandler) ListServices(c fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	services, total, err := h.adminServiceUC.ListServices(c.Context(), repository.ServiceFilter{
+		Query:    strings.TrimSpace(c.Query("q")),
+		Category: strings.TrimSpace(c.Query("category")),
+		Status:   strings.TrimSpace(c.Query("status")),
+		Page:     page,
+		Limit:    limit,
+	})
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	data := make([]dto.AdminServiceRow, len(services))
+	for i, s := range services {
+		data[i] = dto.AdminServiceRow{
+			ID:         s.ID,
+			ProviderID: s.ProviderID,
+			Title:      s.Title,
+			Category:   s.Category,
+			BasePrice:  s.BasePrice,
+			Status:     s.Status,
+			CreatedAt:  s.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminServiceListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	})
+}
+
+// GetService returns one listing in any status with provider context
+// (bypasses the public active-only gate). Read-only.
+func (h *AdminHandler) GetService(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid service ID"))
+	}
+	service, err := h.adminServiceUC.GetService(c.Context(), uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, h.toAdminServiceDetail(c.Context(), service))
+}
+
+// SetServiceStatus applies one moderation transition (approve / reject /
+// takedown / restore). `status` and `reason` are both mandatory; the audit
+// middleware persists the reason automatically.
+func (h *AdminHandler) SetServiceStatus(c fiber.Ctx) error {
+	var payload dto.AdminServiceStatusRequest
+	if err := c.Bind().JSON(&payload); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "status and reason are required"))
+	}
+	if strings.TrimSpace(payload.Status) == "" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "status is required"))
+	}
+	if strings.TrimSpace(payload.Reason) == "" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "reason is required"))
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid service ID"))
+	}
+	service, err := h.adminServiceUC.SetServiceStatus(c.Context(), uint(id), strings.TrimSpace(payload.Status))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, h.toAdminServiceDetail(c.Context(), service))
+}
+
+func (h *AdminHandler) toAdminServiceDetail(ctx context.Context, service *entity.Service) dto.AdminServiceDetailResponse {
+	resp := dto.AdminServiceDetailResponse{
+		ID:              service.ID,
+		ProviderID:      service.ProviderID,
+		Title:           service.Title,
+		Category:        service.Category,
+		Description:     service.Description,
+		UnitType:        service.UnitType,
+		BasePrice:       service.BasePrice,
+		BudgetMin:       service.BudgetMin,
+		BudgetMax:       service.BudgetMax,
+		AutoAcceptPrice: service.AutoAcceptPrice,
+		DurationMinutes: service.DurationMinutes,
+		ServiceAreas:    service.ServiceAreas,
+		ServiceType:     service.ServiceType,
+		Status:          service.Status,
+		CreatedAt:       service.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if h.userUsecase != nil {
+		if provider, _ := h.userUsecase.GetProfile(ctx, service.ProviderID); provider != nil {
+			resp.Provider = &dto.AdminServiceProvider{ID: provider.ID, Name: provider.Name}
+		}
+	}
+	for _, img := range service.Images {
+		url := img.URL
+		if h.imageResolver != nil {
+			url = h.imageResolver.ResolveImageURL(img.URL)
+		}
+		resp.Images = append(resp.Images, dto.ServiceImageResponse{
+			ID:        img.ID,
+			URL:       url,
+			SortOrder: img.SortOrder,
+		})
+	}
+	for _, addon := range service.AddOns {
+		resp.AddOns = append(resp.AddOns, dto.ServiceAddOnResponse{
+			ID:    addon.ID,
+			Name:  addon.Name,
+			Price: addon.Price,
+		})
+	}
+	return resp
 }

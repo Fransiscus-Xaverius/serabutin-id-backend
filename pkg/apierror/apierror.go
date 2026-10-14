@@ -31,6 +31,12 @@ func NewAPIError(httpCode int, code, message string) *APIError {
 func FromDomainError(err error) *APIError {
 	var domainErr *apperror.DomainError
 	if errors.As(err, &domainErr) {
+		// The admin moderation state machine reports disallowed transitions
+		// with this code; it maps to 422 while the legacy INVALID_TRANSITION
+		// codes used by booking/bid flows stay at 400.
+		if domainErr.Code == "INVALID_STATUS_TRANSITION" {
+			return NewAPIError(fiber.StatusUnprocessableEntity, domainErr.Code, domainErr.Message)
+		}
 		switch {
 		case errors.Is(domainErr.Unwrap(), apperror.ErrNotFound):
 			return NewAPIError(fiber.StatusNotFound, domainErr.Code, domainErr.Message)

@@ -123,7 +123,8 @@ func main() {
 	cancelRepo := gormrepo.NewCancellationRepository(db)
 	auditRepo := gormrepo.NewAuditLogRepository(db)
 	adminUserUsecase := usecase.NewAdminUserUsecase(userRepo)
-	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo, adminUserUsecase)
+	adminServiceUsecase := usecase.NewAdminServiceUsecase(serviceRepo)
+	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo, adminUserUsecase, adminServiceUsecase, storageRepo)
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
@@ -234,6 +235,9 @@ func main() {
 	admin.Patch("/users/:id/suspend", adminHandler.SuspendUser)
 	admin.Patch("/users/:id/restore", adminHandler.RestoreUser)
 	admin.Patch("/users/:id/role", adminHandler.SetUserRole)
+	admin.Get("/services", adminHandler.ListServices)
+	admin.Get("/services/:id", adminHandler.GetService)
+	admin.Patch("/services/:id/status", adminHandler.SetServiceStatus)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 

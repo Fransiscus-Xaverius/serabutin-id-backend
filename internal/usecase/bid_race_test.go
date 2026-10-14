@@ -131,6 +131,9 @@ func (f *fakeServiceRepo) FindByProviderID(ctx context.Context, providerID uint,
 	return nil, 0, nil
 }
 func (f *fakeServiceRepo) SetStatus(ctx context.Context, id uint, status string) error { return nil }
+func (f *fakeServiceRepo) ListForAdmin(ctx context.Context, filter repository.ServiceFilter) ([]*entity.Service, int64, error) {
+	return nil, 0, nil
+}
 
 type fakeUserRepo struct{ user *entity.User }
 

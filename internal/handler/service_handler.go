@@ -72,6 +72,13 @@ func (h *ServiceHandler) Get(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
+	// Public detail mirrors the public list (which filters status='active'):
+	// rejected/taken-down (and draft/inactive/deleted) listings are hidden.
+	// Admins inspect any status via GET /admin/services/:id instead.
+	if service.Status != "active" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusNotFound, "SERVICE_NOT_FOUND", "service not found"))
+	}
+
 	provider, _ := h.userUsecase.GetProfile(c.Context(), service.ProviderID)
 	var providerInfo *dto.ProviderInfo
 	if provider != nil {

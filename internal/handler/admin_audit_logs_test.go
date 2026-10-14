@@ -65,7 +65,7 @@ func TestAdminHandler_ListAuditLogs_Paginated(t *testing.T) {
 		{ID: 1, ActorUserID: 7, Action: "a", TargetType: "user", TargetID: "1", Reason: "r1"},
 		{ID: 2, ActorUserID: 8, Action: "b", TargetType: "booking", TargetID: "9", Reason: "r2"},
 	}}
-	h := NewAdminHandler(nil, nil, nil, nil, nil, stub, nil)
+	h := NewAdminHandler(nil, nil, nil, nil, nil, stub, nil, nil, nil)
 	app := auditLogsTestApp(h)
 
 	req := httptest.NewRequest("GET", "/admin/audit-logs?page=1&limit=20", nil)
@@ -105,7 +105,7 @@ func TestAdminHandler_ListAuditLogs_FiltersByActorAndAction(t *testing.T) {
 		{ID: 1, ActorUserID: 7, Action: "user.suspend", Reason: "spam"},
 		{ID: 2, ActorUserID: 8, Action: "user.suspend", Reason: "abuse"},
 	}}
-	h := NewAdminHandler(nil, nil, nil, nil, nil, stub, nil)
+	h := NewAdminHandler(nil, nil, nil, nil, nil, stub, nil, nil, nil)
 	app := auditLogsTestApp(h)
 
 	req := httptest.NewRequest("GET", "/admin/audit-logs?actor_id=7&action=user.suspend", nil)
