@@ -19,6 +19,7 @@ type AdminHandler struct {
 	bookingRepo    repository.BookingRepository
 	userUsecase    *usecase.ProfileUsecase
 	serviceUsecase *usecase.ServiceUsecase
+	auditRepo      repository.AuditLogRepository
 }
 
 func NewAdminHandler(
@@ -27,6 +28,7 @@ func NewAdminHandler(
 	bookingRepo repository.BookingRepository,
 	userUsecase *usecase.ProfileUsecase,
 	serviceUsecase *usecase.ServiceUsecase,
+	auditRepo repository.AuditLogRepository,
 ) *AdminHandler {
 	return &AdminHandler{
 		cancelRepo:     cancelRepo,
@@ -34,6 +36,7 @@ func NewAdminHandler(
 		bookingRepo:    bookingRepo,
 		userUsecase:    userUsecase,
 		serviceUsecase: serviceUsecase,
+		auditRepo:      auditRepo,
 	}
 }
 
@@ -107,6 +110,54 @@ func (h *AdminHandler) ListNotifications(c fiber.Ctx) error {
 		totalPages++
 	}
 	return response.Success(c, fiber.StatusOK, dto.NotificationListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	})
+}
+
+// ListAuditLogs returns paginated audit rows, newest first, optionally
+// filtered by actor (?actor_id=) and action (?action=). Admin-only.
+func (h *AdminHandler) ListAuditLogs(c fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	actorID, _ := strconv.ParseUint(c.Query("actor_id", "0"), 10, 64)
+	items, total, err := h.auditRepo.List(c.Context(), repository.AuditLogFilter{
+		ActorUserID: uint(actorID),
+		Action:      c.Query("action"),
+		Page:        page,
+		Limit:       limit,
+	})
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	data := make([]dto.AuditLogResponse, len(items))
+	for i, x := range items {
+		data[i] = dto.AuditLogResponse{
+			ID:          x.ID,
+			ActorUserID: x.ActorUserID,
+			Action:      x.Action,
+			TargetType:  x.TargetType,
+			TargetID:    x.TargetID,
+			Reason:      x.Reason,
+			CreatedAt:   x.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+	return response.Success(c, fiber.StatusOK, dto.AuditLogListResponse{
 		Data: data,
 		Pagination: dto.PaginationMeta{
 			Page:       page,

@@ -70,7 +70,7 @@ func main() {
 	db.Exec(`ALTER TABLE bookings ALTER COLUMN schedule_date DROP NOT NULL`)
 	db.Exec(`ALTER TABLE bookings ALTER COLUMN schedule_time DROP NOT NULL`)
 	db.Exec(`ALTER TABLE bookings ALTER COLUMN address DROP NOT NULL`)
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
@@ -117,7 +117,8 @@ func main() {
 	bookingUsecase.SetNotifier(notificationUsecase)
 	bidUsecase.SetNotifier(notificationUsecase)
 	cancelRepo := gormrepo.NewCancellationRepository(db)
-	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase)
+	auditRepo := gormrepo.NewAuditLogRepository(db)
+	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo)
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
@@ -218,9 +219,11 @@ func main() {
 	admin.Use(authMiddleware.Authenticate())
 	admin.Use(rateLimiter.Limit())
 	admin.Use(middleware.RequireAdmin(profileUsecase))
+	admin.Use(middleware.AdminAuditLogger(auditRepo, logger.Log))
 	admin.Get("/cancellations", adminHandler.ListCancellations)
 	admin.Get("/notifications", adminHandler.ListNotifications)
 	admin.Get("/bookings/:id", adminHandler.GetBooking)
+	admin.Get("/audit-logs", adminHandler.ListAuditLogs)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 
