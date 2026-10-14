@@ -13,4 +13,17 @@ type UserRepository interface {
 	FindByID(ctx context.Context, id uint) (*entity.User, error)
 	FindByWhatsApp(ctx context.Context, whatsapp string) (*entity.User, error)
 	ExistsByEmail(ctx context.Context, email string) (bool, error)
+	List(ctx context.Context, filter UserFilter) ([]*entity.User, int64, error)
+	UpdateStatus(ctx context.Context, id uint, status string) error
+	UpdateRole(ctx context.Context, id uint, role string) error
+}
+
+type UserFilter struct {
+	Q        string
+	Email    string
+	WhatsApp string
+	Role     string
+	Status   string
+	Page     int
+	Limit    int
 }

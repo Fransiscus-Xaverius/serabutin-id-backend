@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 )
 
 type promoFakeUserRepo struct {
@@ -31,6 +32,15 @@ func (f *promoFakeUserRepo) ExistsByEmail(ctx context.Context, email string) (bo
 }
 func (f *promoFakeUserRepo) Update(ctx context.Context, u *entity.User) error {
 	f.users[u.Email] = u
+	return nil
+}
+func (f *promoFakeUserRepo) List(ctx context.Context, filter repository.UserFilter) ([]*entity.User, int64, error) {
+	return nil, 0, nil
+}
+func (f *promoFakeUserRepo) UpdateStatus(ctx context.Context, id uint, status string) error {
+	return nil
+}
+func (f *promoFakeUserRepo) UpdateRole(ctx context.Context, id uint, role string) error {
 	return nil
 }
 

@@ -148,6 +148,13 @@ func (f *fakeUserRepo) ExistsByEmail(ctx context.Context, email string) (bool, e
 	return false, nil
 }
 func (f *fakeUserRepo) Update(ctx context.Context, u *entity.User) error { return nil }
+func (f *fakeUserRepo) List(ctx context.Context, filter repository.UserFilter) ([]*entity.User, int64, error) {
+	return nil, 0, nil
+}
+func (f *fakeUserRepo) UpdateStatus(ctx context.Context, id uint, status string) error {
+	return nil
+}
+func (f *fakeUserRepo) UpdateRole(ctx context.Context, id uint, role string) error { return nil }
 
 // TestCreateBid_AutoAcceptUsesRaceSafeTransition asserts that the
 // auto-accept path uses AcceptIfPending (conditional), never the

@@ -70,6 +70,10 @@ func main() {
 	db.Exec(`ALTER TABLE bookings ALTER COLUMN schedule_date DROP NOT NULL`)
 	db.Exec(`ALTER TABLE bookings ALTER COLUMN schedule_time DROP NOT NULL`)
 	db.Exec(`ALTER TABLE bookings ALTER COLUMN address DROP NOT NULL`)
+	// Ticket 3: suspend flag for existing deployments created before the
+	// status column (AutoMigrate below only adds it on fresh tables).
+	db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status varchar(20) NOT NULL DEFAULT 'active'`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_status ON users (status)`)
 	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
@@ -118,7 +122,8 @@ func main() {
 	bidUsecase.SetNotifier(notificationUsecase)
 	cancelRepo := gormrepo.NewCancellationRepository(db)
 	auditRepo := gormrepo.NewAuditLogRepository(db)
-	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo)
+	adminUserUsecase := usecase.NewAdminUserUsecase(userRepo)
+	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo, adminUserUsecase)
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
@@ -224,6 +229,11 @@ func main() {
 	admin.Get("/notifications", adminHandler.ListNotifications)
 	admin.Get("/bookings/:id", adminHandler.GetBooking)
 	admin.Get("/audit-logs", adminHandler.ListAuditLogs)
+	admin.Get("/users", adminHandler.ListUsers)
+	admin.Get("/users/:id", adminHandler.GetUser)
+	admin.Patch("/users/:id/suspend", adminHandler.SuspendUser)
+	admin.Patch("/users/:id/restore", adminHandler.RestoreUser)
+	admin.Patch("/users/:id/role", adminHandler.SetUserRole)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 

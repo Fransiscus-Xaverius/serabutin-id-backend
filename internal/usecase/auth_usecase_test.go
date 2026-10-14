@@ -12,8 +12,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
-	"github.com/serabutin/serabutin-id-backend/internal/domain/service"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/service"
 )
 
 type MockUserRepository struct {
@@ -56,6 +57,24 @@ func (m *MockUserRepository) FindByWhatsApp(ctx context.Context, whatsapp string
 
 func (m *MockUserRepository) Update(ctx context.Context, user *entity.User) error {
 	args := m.Called(ctx, user)
+	return args.Error(0)
+}
+
+func (m *MockUserRepository) List(ctx context.Context, filter repository.UserFilter) ([]*entity.User, int64, error) {
+	args := m.Called(ctx, filter)
+	if args.Get(0) == nil {
+		return nil, 0, args.Error(2)
+	}
+	return args.Get(0).([]*entity.User), args.Get(1).(int64), args.Error(2)
+}
+
+func (m *MockUserRepository) UpdateStatus(ctx context.Context, id uint, status string) error {
+	args := m.Called(ctx, id, status)
+	return args.Error(0)
+}
+
+func (m *MockUserRepository) UpdateRole(ctx context.Context, id uint, role string) error {
+	args := m.Called(ctx, id, role)
 	return args.Error(0)
 }
 

@@ -2,17 +2,18 @@ package handler
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/internal/dto"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
 	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
+	"github.com/serabutin/serabutin-id-backend/pkg/requestctx"
 	"github.com/serabutin/serabutin-id-backend/pkg/response"
 )
 
 // AdminHandler exposes read-only JSON for the admin UI.
-// Role guard is applied at the route group level.
 type AdminHandler struct {
 	cancelRepo     repository.CancellationRepository
 	notificationUC *usecase.NotificationUsecase
@@ -20,6 +21,7 @@ type AdminHandler struct {
 	userUsecase    *usecase.ProfileUsecase
 	serviceUsecase *usecase.ServiceUsecase
 	auditRepo      repository.AuditLogRepository
+	adminUserUC    *usecase.AdminUserUsecase
 }
 
 func NewAdminHandler(
@@ -29,6 +31,7 @@ func NewAdminHandler(
 	userUsecase *usecase.ProfileUsecase,
 	serviceUsecase *usecase.ServiceUsecase,
 	auditRepo repository.AuditLogRepository,
+	adminUserUC *usecase.AdminUserUsecase,
 ) *AdminHandler {
 	return &AdminHandler{
 		cancelRepo:     cancelRepo,
@@ -37,6 +40,7 @@ func NewAdminHandler(
 		userUsecase:    userUsecase,
 		serviceUsecase: serviceUsecase,
 		auditRepo:      auditRepo,
+		adminUserUC:    adminUserUC,
 	}
 }
 
@@ -216,4 +220,175 @@ func (h *AdminHandler) GetBooking(c fiber.Ctx) error {
 		resp.AddOns = append(resp.AddOns, dto.BookingAddOnResponse{Name: addon.Name, Price: addon.Price})
 	}
 	return response.Success(c, fiber.StatusOK, resp)
+}
+
+// ListUsers returns the paginated admin user directory. Query: q (partial
+// match over email/name/whatsapp), email, whatsapp, role, status, page,
+// limit (clamped to 50, following the existing admin list pattern).
+func (h *AdminHandler) ListUsers(c fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	users, total, err := h.adminUserUC.ListUsers(c.Context(), repository.UserFilter{
+		Q:        strings.TrimSpace(c.Query("q")),
+		Email:    strings.TrimSpace(c.Query("email")),
+		WhatsApp: strings.TrimSpace(c.Query("whatsapp")),
+		Role:     strings.TrimSpace(c.Query("role")),
+		Status:   strings.TrimSpace(c.Query("status")),
+		Page:     page,
+		Limit:    limit,
+	})
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	data := make([]dto.AdminUserResponse, len(users))
+	for i, u := range users {
+		data[i] = dto.AdminUserResponse{
+			ID:        u.ID,
+			Email:     u.Email,
+			Name:      u.Name,
+			WhatsApp:  u.WhatsApp,
+			Role:      u.Role,
+			Status:    u.Status,
+			CreatedAt: u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminUserListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	})
+}
+
+// GetUser returns a single admin-directory row.
+func (h *AdminHandler) GetUser(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid user ID"))
+	}
+	user, err := h.adminUserUC.GetUser(c.Context(), uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminUserResponse{
+		ID:        user.ID,
+		Email:     user.Email,
+		Name:      user.Name,
+		WhatsApp:  user.WhatsApp,
+		Role:      user.Role,
+		Status:    user.Status,
+		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	})
+}
+
+// adminMutationReason extracts the mandatory `reason` from the request body.
+// Every admin user mutation is audit-logged by middleware.AdminAuditLogger,
+// which persists this same field — the handler only enforces presence.
+func adminMutationReason(c fiber.Ctx) string {
+	var payload dto.AdminReasonRequest
+	if err := c.Bind().JSON(&payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Reason)
+}
+
+func requireMutationReason(c fiber.Ctx) (string, error) {
+	reason := adminMutationReason(c)
+	if reason == "" {
+		return "", apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "reason is required")
+	}
+	return reason, nil
+}
+
+// SuspendUser sets users.status=suspended (idempotent 200 on no-op).
+func (h *AdminHandler) SuspendUser(c fiber.Ctx) error {
+	if _, err := requireMutationReason(c); err != nil {
+		return apierror.GlobalErrorHandler(c, err)
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid user ID"))
+	}
+	user, err := h.adminUserUC.Suspend(c.Context(), uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminUserResponse{
+		ID:        user.ID,
+		Email:     user.Email,
+		Name:      user.Name,
+		WhatsApp:  user.WhatsApp,
+		Role:      user.Role,
+		Status:    user.Status,
+		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	})
+}
+
+// RestoreUser sets users.status=active (idempotent 200 on no-op).
+func (h *AdminHandler) RestoreUser(c fiber.Ctx) error {
+	if _, err := requireMutationReason(c); err != nil {
+		return apierror.GlobalErrorHandler(c, err)
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid user ID"))
+	}
+	user, err := h.adminUserUC.Restore(c.Context(), uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminUserResponse{
+		ID:        user.ID,
+		Email:     user.Email,
+		Name:      user.Name,
+		WhatsApp:  user.WhatsApp,
+		Role:      user.Role,
+		Status:    user.Status,
+		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	})
+}
+
+// SetUserRole changes users.role. The route-level RequireAdmin guarantees the
+// actor is an admin; the usecase rejects self-demotion.
+func (h *AdminHandler) SetUserRole(c fiber.Ctx) error {
+	var payload dto.AdminRoleRequest
+	if err := c.Bind().JSON(&payload); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "role and reason are required"))
+	}
+	if strings.TrimSpace(payload.Reason) == "" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "reason is required"))
+	}
+	if strings.TrimSpace(payload.Role) == "" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "role is required"))
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid user ID"))
+	}
+	user, err := h.adminUserUC.SetRole(c.Context(), requestctx.GetUserID(c), uint(id), strings.TrimSpace(payload.Role))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminUserResponse{
+		ID:        user.ID,
+		Email:     user.Email,
+		Name:      user.Name,
+		WhatsApp:  user.WhatsApp,
+		Role:      user.Role,
+		Status:    user.Status,
+		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	})
 }
