@@ -25,6 +25,7 @@ type AdminHandler struct {
 	auditRepo      repository.AuditLogRepository
 	adminUserUC    *usecase.AdminUserUsecase
 	adminServiceUC *usecase.AdminServiceUsecase
+	adminBookingUC *usecase.AdminBookingUsecase
 	imageResolver  repository.StorageRepository
 }
 
@@ -38,6 +39,7 @@ func NewAdminHandler(
 	adminUserUC *usecase.AdminUserUsecase,
 	adminServiceUC *usecase.AdminServiceUsecase,
 	imageResolver repository.StorageRepository,
+	adminBookingUC *usecase.AdminBookingUsecase,
 ) *AdminHandler {
 	return &AdminHandler{
 		cancelRepo:     cancelRepo,
@@ -48,6 +50,7 @@ func NewAdminHandler(
 		auditRepo:      auditRepo,
 		adminUserUC:    adminUserUC,
 		adminServiceUC: adminServiceUC,
+		adminBookingUC: adminBookingUC,
 		imageResolver:  imageResolver,
 	}
 }
@@ -228,6 +231,87 @@ func (h *AdminHandler) GetBooking(c fiber.Ctx) error {
 		resp.AddOns = append(resp.AddOns, dto.BookingAddOnResponse{Name: addon.Name, Price: addon.Price})
 	}
 	return response.Success(c, fiber.StatusOK, resp)
+}
+
+// ListBookings returns the paginated admin bookings queue. Query: status,
+// customer_id, provider_id, date_from/date_to (YYYY-MM-DD against
+// schedule_date), page, limit (clamped to 50, following the existing admin
+// list pattern). Read-only.
+func (h *AdminHandler) ListBookings(c fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	customerID, _ := strconv.ParseUint(c.Query("customer_id", "0"), 10, 64)
+	providerID, _ := strconv.ParseUint(c.Query("provider_id", "0"), 10, 64)
+	bookings, total, err := h.adminBookingUC.ListBookings(c.Context(), repository.AdminBookingFilter{
+		Status:     strings.TrimSpace(c.Query("status")),
+		CustomerID: uint(customerID),
+		ProviderID: uint(providerID),
+		DateFrom:   strings.TrimSpace(c.Query("date_from")),
+		DateTo:     strings.TrimSpace(c.Query("date_to")),
+		Page:       page,
+		Limit:      limit,
+	})
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	data := make([]dto.AdminBookingRow, len(bookings))
+	for i, b := range bookings {
+		row := dto.AdminBookingRow{
+			ID:         b.ID,
+			CustomerID: b.CustomerID,
+			ProviderID: b.ProviderID,
+			ServiceID:  b.ServiceID,
+			Status:     b.Status,
+			Total:      b.Total,
+			CreatedAt:  b.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+		if b.ScheduleDate != nil {
+			s := b.ScheduleDate.Format("2006-01-02")
+			row.ScheduleDate = &s
+		}
+		data[i] = row
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminBookingListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	})
+}
+
+// CancelBooking force-cancels a non-terminal booking as a dispute action.
+// `reason` is mandatory; the audit middleware persists it automatically.
+// Terminal states (completed, cancelled, rejected) return 422.
+func (h *AdminHandler) CancelBooking(c fiber.Ctx) error {
+	reason, err := requireMutationReason(c)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, err)
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
+	}
+	booking, _, err := h.adminBookingUC.AdminCancelBooking(c.Context(), requestctx.GetUserID(c), uint(id), reason)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, map[string]interface{}{
+		"id":     booking.ID,
+		"status": booking.Status,
+	})
 }
 
 // ListUsers returns the paginated admin user directory. Query: q (partial

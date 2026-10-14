@@ -116,6 +116,9 @@ func (f *fakeBookingRepo) FindByUserID(ctx context.Context, userID uint, role st
 func (f *fakeBookingRepo) FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error) {
 	return nil, nil
 }
+func (f *fakeBookingRepo) ListForAdmin(ctx context.Context, filter repository.AdminBookingFilter) ([]*entity.Booking, int64, error) {
+	return nil, 0, nil
+}
 
 type fakeServiceRepo struct{ svc *entity.Service }
 

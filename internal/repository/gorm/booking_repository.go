@@ -134,6 +134,57 @@ func (r *BookingRepository) FindByUserID(ctx context.Context, userID uint, role 
 	return r.toEntities(models), total, nil
 }
 
+// ListForAdmin serves the admin bookings queue: optional status, customer,
+// provider, and schedule-date-range filters. Ordered newest first by id,
+// which is stable for offset pagination.
+func (r *BookingRepository) ListForAdmin(ctx context.Context, filter repository.AdminBookingFilter) ([]*entity.Booking, int64, error) {
+	var models []model.BookingModel
+	var total int64
+
+	query := r.db.WithContext(ctx).Model(&model.BookingModel{})
+
+	if filter.Status != "" {
+		query = query.Where("bookings.status = ?", filter.Status)
+	}
+	if filter.CustomerID != 0 {
+		query = query.Where("bookings.customer_id = ?", filter.CustomerID)
+	}
+	if filter.ProviderID != 0 {
+		query = query.Where("bookings.provider_id = ?", filter.ProviderID)
+	}
+	if filter.DateFrom != "" {
+		from, err := time.Parse("2006-01-02", filter.DateFrom)
+		if err != nil {
+			return nil, 0, apperror.NewDomainError(apperror.ErrValidation, "INVALID_DATE", "invalid date_from format, expected YYYY-MM-DD")
+		}
+		query = query.Where("bookings.schedule_date >= ?", from)
+	}
+	if filter.DateTo != "" {
+		to, err := time.Parse("2006-01-02", filter.DateTo)
+		if err != nil {
+			return nil, 0, apperror.NewDomainError(apperror.ErrValidation, "INVALID_DATE", "invalid date_to format, expected YYYY-MM-DD")
+		}
+		query = query.Where("bookings.schedule_date <= ?", to)
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+
+	offset := (filter.Page - 1) * filter.Limit
+	err := query.
+		Preload("BookingAddOns").
+		Order("bookings.id DESC").
+		Offset(offset).
+		Limit(filter.Limit).
+		Find(&models).Error
+	if err != nil {
+		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+
+	return r.toEntities(models), total, nil
+}
+
 func (r *BookingRepository) FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error) {
 	parsed, err := time.Parse("2006-01-02", date)
 	if err != nil {

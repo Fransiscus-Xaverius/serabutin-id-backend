@@ -17,10 +17,26 @@ type BookingRepository interface {
 	UpdateCancel(ctx context.Context, id uint, cancellationID uint, cancelledBy uint) error
 	FindByUserID(ctx context.Context, userID uint, role string, filter BookingFilter) ([]*entity.Booking, int64, error)
 	FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error)
+	// ListForAdmin serves the admin bookings queue: optional status,
+	// customer, provider, and schedule-date-range filters. Empty fields
+	// mean no constraint on that axis.
+	ListForAdmin(ctx context.Context, filter AdminBookingFilter) ([]*entity.Booking, int64, error)
 }
 
 type BookingFilter struct {
 	Status string
 	Page   int
 	Limit  int
+}
+
+// AdminBookingFilter scopes the admin bookings queue. DateFrom/DateTo are
+// YYYY-MM-DD bounds matched against schedule_date (inclusive).
+type AdminBookingFilter struct {
+	Status     string
+	CustomerID uint
+	ProviderID uint
+	DateFrom   string
+	DateTo     string
+	Page       int
+	Limit      int
 }

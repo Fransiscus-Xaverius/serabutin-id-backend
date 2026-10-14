@@ -74,6 +74,14 @@ func main() {
 	// status column (AutoMigrate below only adds it on fresh tables).
 	db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status varchar(20) NOT NULL DEFAULT 'active'`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_status ON users (status)`)
+	// Force-cancel writes PolicyVersion "admin-override" (14 chars) into
+	// cancellations.policy_version varchar(10) and "admin_override:"+reason
+	// into cancellations.reason varchar(30) — every force-cancel 500s with
+	// "value too long". AutoMigrate does NOT resize existing Postgres
+	// columns, so widen them here (plain ALTER is idempotent when the type
+	// already matches; safe no-op on fresh tables created wide by migrate).
+	db.Exec(`ALTER TABLE cancellations ALTER COLUMN policy_version TYPE varchar(32)`)
+	db.Exec(`ALTER TABLE cancellations ALTER COLUMN reason TYPE varchar(500)`)
 	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
@@ -124,7 +132,9 @@ func main() {
 	auditRepo := gormrepo.NewAuditLogRepository(db)
 	adminUserUsecase := usecase.NewAdminUserUsecase(userRepo)
 	adminServiceUsecase := usecase.NewAdminServiceUsecase(serviceRepo)
-	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo, adminUserUsecase, adminServiceUsecase, storageRepo)
+	adminBookingUsecase := usecase.NewAdminBookingUsecase(bookingRepo, cancelRepo)
+	adminBookingUsecase.SetNotifier(notificationUsecase)
+	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo, adminUserUsecase, adminServiceUsecase, storageRepo, adminBookingUsecase)
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
@@ -228,7 +238,9 @@ func main() {
 	admin.Use(middleware.AdminAuditLogger(auditRepo, logger.Log))
 	admin.Get("/cancellations", adminHandler.ListCancellations)
 	admin.Get("/notifications", adminHandler.ListNotifications)
+	admin.Get("/bookings", adminHandler.ListBookings)
 	admin.Get("/bookings/:id", adminHandler.GetBooking)
+	admin.Patch("/bookings/:id/cancel", adminHandler.CancelBooking)
 	admin.Get("/audit-logs", adminHandler.ListAuditLogs)
 	admin.Get("/users", adminHandler.ListUsers)
 	admin.Get("/users/:id", adminHandler.GetUser)

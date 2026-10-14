@@ -43,6 +43,9 @@ func (f *cancelFakeBookingRepo) FindByUserID(ctx context.Context, userID uint, r
 func (f *cancelFakeBookingRepo) FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error) {
 	return nil, nil
 }
+func (f *cancelFakeBookingRepo) ListForAdmin(ctx context.Context, filter repository.AdminBookingFilter) ([]*entity.Booking, int64, error) {
+	return nil, 0, nil
+}
 
 type cancelFakeCancelRepo struct{ created []*entity.Cancellation }
 

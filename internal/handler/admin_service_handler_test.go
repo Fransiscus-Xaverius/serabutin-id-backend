@@ -74,7 +74,7 @@ func (m *mockServiceRepo) ListForAdmin(ctx context.Context, filter repository.Se
 func newAdminServiceTestApp(t *testing.T, repo repository.ServiceRepository) *fiber.App {
 	t.Helper()
 	uc := usecase.NewAdminServiceUsecase(repo)
-	h := NewAdminHandler(nil, nil, nil, nil, nil, nil, nil, uc, nil)
+	h := NewAdminHandler(nil, nil, nil, nil, nil, nil, nil, uc, nil, nil)
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		requestctx.SetUserID(c, 7)
