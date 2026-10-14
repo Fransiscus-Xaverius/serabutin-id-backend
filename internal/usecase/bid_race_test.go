@@ -161,6 +161,9 @@ func (f *fakeUserRepo) UpdateStatus(ctx context.Context, id uint, status string)
 	return nil
 }
 func (f *fakeUserRepo) UpdateRole(ctx context.Context, id uint, role string) error { return nil }
+func (f *fakeUserRepo) UpdateChatBlocked(ctx context.Context, id uint, blocked bool) error {
+	return nil
+}
 
 // TestCreateBid_AutoAcceptUsesRaceSafeTransition asserts that the
 // auto-accept path uses AcceptIfPending (conditional), never the

@@ -19,6 +19,7 @@ import (
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/service"
 	"github.com/serabutin/serabutin-id-backend/internal/handler"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/chatclient"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/config"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/database"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/imaging"
@@ -86,6 +87,10 @@ func main() {
 	// hidden column (AutoMigrate below only adds it on fresh tables).
 	db.Exec(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_reviews_hidden ON reviews (hidden)`)
+	// Ticket 8: chat-only block flag for existing deployments created
+	// before the column (AutoMigrate below only adds it on fresh tables).
+	db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_blocked boolean NOT NULL DEFAULT false`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_chat_blocked ON users (chat_blocked)`)
 	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
@@ -122,7 +127,7 @@ func main() {
 	bidHandler := handler.NewBidHandler(bidUsecase, profileUsecase, serviceUsecase)
 	reviewUsecase := usecase.NewReviewUsecase(reviewRepo, bookingRepo, userRepo)
 	reviewHandler := handler.NewReviewHandler(reviewUsecase, profileUsecase)
-	introspectUsecase := usecase.NewIntrospectUsecase(tokenService, tokenRepo)
+	introspectUsecase := usecase.NewIntrospectUsecase(tokenService, tokenRepo, userRepo)
 	introspectHandler := handler.NewIntrospectHandler(introspectUsecase)
 	userUsecase := usecase.NewUserUsecase(userRepo)
 	statsUsecase := usecase.NewStatsUsecase(userRepo, serviceRepo, bookingRepo)
@@ -140,9 +145,11 @@ func main() {
 	adminBookingUsecase.SetNotifier(notificationUsecase)
 	adminReviewUsecase := usecase.NewAdminReviewUsecase(reviewRepo, gormrepo.NewReportRepository(db))
 	adminStatsUsecase := usecase.NewAdminStatsUsecase(gormrepo.NewAdminStatsRepository(db))
+	adminChatUsecase := usecase.NewAdminChatUsecase(userRepo, chatclient.NewClient(cfg.ChatBackendBaseURL, cfg.ChatServiceToken, 5*time.Second))
 	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo, adminUserUsecase, adminServiceUsecase, storageRepo, adminBookingUsecase)
 	adminHandler.SetAdminReviewUC(adminReviewUsecase)
 	adminHandler.SetAdminStatsUC(adminStatsUsecase)
+	adminHandler.SetAdminChatUC(adminChatUsecase)
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
@@ -256,6 +263,8 @@ func main() {
 	admin.Patch("/users/:id/suspend", adminHandler.SuspendUser)
 	admin.Patch("/users/:id/restore", adminHandler.RestoreUser)
 	admin.Patch("/users/:id/role", adminHandler.SetUserRole)
+	admin.Patch("/users/:id/chat-block", adminHandler.SetChatBlock)
+	admin.Get("/chat/conversations", adminHandler.ListChatConversations)
 	admin.Get("/services", adminHandler.ListServices)
 	admin.Get("/services/:id", adminHandler.GetService)
 	admin.Patch("/services/:id/status", adminHandler.SetServiceStatus)

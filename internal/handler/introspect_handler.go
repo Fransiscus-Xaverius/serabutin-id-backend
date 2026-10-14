@@ -22,8 +22,9 @@ func (h *IntrospectHandler) Introspect(c fiber.Ctx) error {
 
 	result := h.introspectUsecase.Introspect(c.Context(), req.Token)
 	return c.JSON(dto.IntrospectResponse{
-		Active: result.Active,
-		UserID: result.UserID,
-		Email:  result.Email,
+		Active:      result.Active,
+		UserID:      result.UserID,
+		Email:       result.Email,
+		ChatBlocked: result.ChatBlocked,
 	})
 }

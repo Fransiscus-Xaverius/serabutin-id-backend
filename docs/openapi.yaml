@@ -1,0 +1,110 @@
+openapi: 3.1.0
+info:
+  title: serabutin.id backend API
+  version: 1.0.0
+  description: >
+    Admin-first contract seed (ticket 8). v1 scope for chat safety is
+    conversation METADATA only (participants, message counts, timestamps) +
+    user chat-block. No message-content search or read API in v1.
+servers:
+  - url: http://localhost:3000/api/v1
+paths:
+  /admin/chat/conversations:
+    get:
+      tags: [Admin]
+      summary: List conversation metadata (no message content)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: query
+          schema: { type: integer }
+          description: Filter to conversations including this user.
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 50 }
+      responses:
+        '200':
+          description: Paginated metadata rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/AdminConversationRow' }
+                      pagination: { $ref: '#/components/schemas/PaginationMeta' }
+        '502':
+          description: Chat backend directory unavailable.
+  /admin/users/{id}/chat-block:
+    patch:
+      tags: [Admin]
+      summary: Block/unblock a user from chat (narrower than suspend)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [blocked, reason]
+              properties:
+                blocked: { type: boolean }
+                reason: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Updated admin user row (audit-logged automatically).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/AdminUserRow' }
+        '400':
+          description: Missing blocked flag or reason.
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    AdminConversationRow:
+      type: object
+      required: [conversation_id, user_a_id, user_b_id, message_count, last_activity_at, flags]
+      properties:
+        conversation_id: { type: string, format: uuid }
+        user_a_id: { type: integer }
+        user_b_id: { type: integer }
+        message_count: { type: integer }
+        last_activity_at: { type: string, format: date-time }
+        flags: { type: integer, description: Report count; always 0 in v1 (reports key targets by uint, chat IDs are UUIDs). }
+    AdminUserRow:
+      type: object
+      required: [id, email, name, whatsapp, role, status, chat_blocked, created_at]
+      properties:
+        id: { type: integer }
+        email: { type: string }
+        name: { type: string }
+        whatsapp: { type: string }
+        role: { type: string }
+        status: { type: string }
+        chat_blocked: { type: boolean }
+        created_at: { type: string, format: date-time }
+    PaginationMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }

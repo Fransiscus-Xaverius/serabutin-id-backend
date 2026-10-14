@@ -7,13 +7,16 @@ import (
 )
 
 type UserModel struct {
-	ID           uint   `gorm:"primaryKey"`
-	Email        string `gorm:"uniqueIndex;not null;size:255"`
-	Password     string `gorm:"not null"`
-	Name         string `gorm:"size:100;not null"`
-	WhatsApp     string `gorm:"uniqueIndex;not null;size:20"`
-	Role         string `gorm:"size:20;default:customer;not null"`
-	Status       string `gorm:"size:20;not null;default:active;index"`
+	ID       uint   `gorm:"primaryKey"`
+	Email    string `gorm:"uniqueIndex;not null;size:255"`
+	Password string `gorm:"not null"`
+	Name     string `gorm:"size:100;not null"`
+	WhatsApp string `gorm:"uniqueIndex;not null;size:20"`
+	Role     string `gorm:"size:20;default:customer;not null"`
+	Status   string `gorm:"size:20;not null;default:active;index"`
+	// ChatBlocked is the ticket-8 chat-only block flag (narrower than
+	// users.status=suspended, which locks the whole account).
+	ChatBlocked  bool   `gorm:"not null;default:false;index"`
 	Bio          string `gorm:"size:500"`
 	AvatarURL    string `gorm:"size:500"`
 	Address      string `gorm:"size:255"`

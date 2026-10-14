@@ -3,13 +3,14 @@ package dto
 // AdminUserResponse is the admin-directory row. Password hashes and other
 // secrets are never exposed here.
 type AdminUserResponse struct {
-	ID        uint   `json:"id"`
-	Email     string `json:"email"`
-	Name      string `json:"name"`
-	WhatsApp  string `json:"whatsapp"`
-	Role      string `json:"role"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	ID          uint   `json:"id"`
+	Email       string `json:"email"`
+	Name        string `json:"name"`
+	WhatsApp    string `json:"whatsapp"`
+	Role        string `json:"role"`
+	Status      string `json:"status"`
+	ChatBlocked bool   `json:"chat_blocked"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type AdminUserListResponse struct {

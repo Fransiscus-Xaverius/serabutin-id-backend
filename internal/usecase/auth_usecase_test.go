@@ -78,6 +78,11 @@ func (m *MockUserRepository) UpdateRole(ctx context.Context, id uint, role strin
 	return args.Error(0)
 }
 
+func (m *MockUserRepository) UpdateChatBlocked(ctx context.Context, id uint, blocked bool) error {
+	args := m.Called(ctx, id, blocked)
+	return args.Error(0)
+}
+
 type MockTokenRepository struct {
 	mock.Mock
 }

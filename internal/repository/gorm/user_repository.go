@@ -30,6 +30,7 @@ func (r *UserRepository) Create(ctx context.Context, user *entity.User) error {
 		WhatsApp:     user.WhatsApp,
 		Role:         user.Role,
 		Status:       user.Status,
+		ChatBlocked:  user.ChatBlocked,
 		Bio:          user.Bio,
 		AvatarURL:    user.AvatarURL,
 		Address:      user.Address,
@@ -76,6 +77,7 @@ func (r *UserRepository) Update(ctx context.Context, user *entity.User) error {
 		WhatsApp:     user.WhatsApp,
 		Role:         user.Role,
 		Status:       user.Status,
+		ChatBlocked:  user.ChatBlocked,
 		Bio:          user.Bio,
 		AvatarURL:    user.AvatarURL,
 		Address:      user.Address,
@@ -226,6 +228,18 @@ func (r *UserRepository) UpdateRole(ctx context.Context, id uint, role string) e
 	return nil
 }
 
+// UpdateChatBlocked writes only the chat_blocked column.
+func (r *UserRepository) UpdateChatBlocked(ctx context.Context, id uint, blocked bool) error {
+	result := r.db.WithContext(ctx).Model(&model.UserModel{}).Where("id = ?", id).Update("chat_blocked", blocked)
+	if result.Error != nil {
+		return apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", result.Error.Error())
+	}
+	if result.RowsAffected == 0 {
+		return apperror.NewDomainError(apperror.ErrNotFound, "USER_NOT_FOUND", "user not found")
+	}
+	return nil
+}
+
 var _ repository.UserRepository = (*UserRepository)(nil)
 
 func (r *UserRepository) toEntity(m *model.UserModel) *entity.User {
@@ -237,6 +251,7 @@ func (r *UserRepository) toEntity(m *model.UserModel) *entity.User {
 		WhatsApp:     m.WhatsApp,
 		Role:         m.Role,
 		Status:       m.Status,
+		ChatBlocked:  m.ChatBlocked,
 		Bio:          m.Bio,
 		AvatarURL:    m.AvatarURL,
 		Address:      m.Address,

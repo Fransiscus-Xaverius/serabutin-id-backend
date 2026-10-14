@@ -29,6 +29,7 @@ type AdminHandler struct {
 	adminBookingUC *usecase.AdminBookingUsecase
 	adminReviewUC  *usecase.AdminReviewUsecase
 	adminStatsUC   *usecase.AdminStatsUsecase
+	adminChatUC    *usecase.AdminChatUsecase
 	imageResolver  repository.StorageRepository
 }
 
@@ -70,6 +71,13 @@ func (h *AdminHandler) SetAdminReviewUC(uc *usecase.AdminReviewUsecase) {
 // relied on by existing handler tests — stays stable.
 func (h *AdminHandler) SetAdminStatsUC(uc *usecase.AdminStatsUsecase) {
 	h.adminStatsUC = uc
+}
+
+// SetAdminChatUC attaches the chat-safety usecase. Kept as a setter
+// (mirroring the review/stats pattern) so the established constructor shape
+// — relied on by existing handler tests — stays stable.
+func (h *AdminHandler) SetAdminChatUC(uc *usecase.AdminChatUsecase) {
+	h.adminChatUC = uc
 }
 
 // GetStats returns the read-only platform health aggregates for the admin
@@ -365,13 +373,14 @@ func (h *AdminHandler) ListUsers(c fiber.Ctx) error {
 	data := make([]dto.AdminUserResponse, len(users))
 	for i, u := range users {
 		data[i] = dto.AdminUserResponse{
-			ID:        u.ID,
-			Email:     u.Email,
-			Name:      u.Name,
-			WhatsApp:  u.WhatsApp,
-			Role:      u.Role,
-			Status:    u.Status,
-			CreatedAt: u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			ID:          u.ID,
+			Email:       u.Email,
+			Name:        u.Name,
+			WhatsApp:    u.WhatsApp,
+			Role:        u.Role,
+			Status:      u.Status,
+			ChatBlocked: u.ChatBlocked,
+			CreatedAt:   u.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 	}
 	if page < 1 {
@@ -406,13 +415,14 @@ func (h *AdminHandler) GetUser(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 	return response.Success(c, fiber.StatusOK, dto.AdminUserResponse{
-		ID:        user.ID,
-		Email:     user.Email,
-		Name:      user.Name,
-		WhatsApp:  user.WhatsApp,
-		Role:      user.Role,
-		Status:    user.Status,
-		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:          user.ID,
+		Email:       user.Email,
+		Name:        user.Name,
+		WhatsApp:    user.WhatsApp,
+		Role:        user.Role,
+		Status:      user.Status,
+		ChatBlocked: user.ChatBlocked,
+		CreatedAt:   user.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	})
 }
 
@@ -449,13 +459,14 @@ func (h *AdminHandler) SuspendUser(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 	return response.Success(c, fiber.StatusOK, dto.AdminUserResponse{
-		ID:        user.ID,
-		Email:     user.Email,
-		Name:      user.Name,
-		WhatsApp:  user.WhatsApp,
-		Role:      user.Role,
-		Status:    user.Status,
-		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:          user.ID,
+		Email:       user.Email,
+		Name:        user.Name,
+		WhatsApp:    user.WhatsApp,
+		Role:        user.Role,
+		Status:      user.Status,
+		ChatBlocked: user.ChatBlocked,
+		CreatedAt:   user.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	})
 }
 
@@ -473,13 +484,14 @@ func (h *AdminHandler) RestoreUser(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 	return response.Success(c, fiber.StatusOK, dto.AdminUserResponse{
-		ID:        user.ID,
-		Email:     user.Email,
-		Name:      user.Name,
-		WhatsApp:  user.WhatsApp,
-		Role:      user.Role,
-		Status:    user.Status,
-		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:          user.ID,
+		Email:       user.Email,
+		Name:        user.Name,
+		WhatsApp:    user.WhatsApp,
+		Role:        user.Role,
+		Status:      user.Status,
+		ChatBlocked: user.ChatBlocked,
+		CreatedAt:   user.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	})
 }
 
@@ -505,13 +517,94 @@ func (h *AdminHandler) SetUserRole(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 	return response.Success(c, fiber.StatusOK, dto.AdminUserResponse{
-		ID:        user.ID,
-		Email:     user.Email,
-		Name:      user.Name,
-		WhatsApp:  user.WhatsApp,
-		Role:      user.Role,
-		Status:    user.Status,
-		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:          user.ID,
+		Email:       user.Email,
+		Name:        user.Name,
+		WhatsApp:    user.WhatsApp,
+		Role:        user.Role,
+		Status:      user.Status,
+		ChatBlocked: user.ChatBlocked,
+		CreatedAt:   user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	})
+}
+
+// SetChatBlock toggles the chat-only block flag (users.chat_blocked).
+// `blocked` and `reason` are both mandatory; the audit middleware persists
+// the reason automatically. Unlike suspend, a chat-blocked user can still
+// book — only the chat backend refuses token exchange. Idempotent 200 on
+// no-op.
+func (h *AdminHandler) SetChatBlock(c fiber.Ctx) error {
+	var payload dto.AdminChatBlockRequest
+	if err := c.Bind().JSON(&payload); err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "blocked and reason are required"))
+	}
+	if payload.Blocked == nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "blocked is required"))
+	}
+	if strings.TrimSpace(payload.Reason) == "" {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "VALIDATION_ERROR", "reason is required"))
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid user ID"))
+	}
+	user, err := h.adminChatUC.SetChatBlock(c.Context(), uint(id), *payload.Blocked)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminUserResponse{
+		ID:          user.ID,
+		Email:       user.Email,
+		Name:        user.Name,
+		WhatsApp:    user.WhatsApp,
+		Role:        user.Role,
+		Status:      user.Status,
+		ChatBlocked: user.ChatBlocked,
+		CreatedAt:   user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	})
+}
+
+// ListChatConversations returns paginated conversation METADATA proxied from
+// the chat backend (filter ?user_id=). Message bodies are never exposed —
+// the row shape has no content fields by construction. Admin-only,
+// read-only (never audit-logged).
+func (h *AdminHandler) ListChatConversations(c fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	userID, _ := strconv.ParseUint(c.Query("user_id", "0"), 10, 64)
+	rows, total, err := h.adminChatUC.ListConversations(c.Context(), uint(userID), page, limit)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	data := make([]dto.AdminConversationRow, len(rows))
+	for i, r := range rows {
+		data[i] = dto.AdminConversationRow{
+			ConversationID: r.ConversationID,
+			UserAID:        r.UserAID,
+			UserBID:        r.UserBID,
+			MessageCount:   r.MessageCount,
+			LastActivityAt: r.LastActivityAt,
+			Flags:          r.Flags,
+		}
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	totalPages := total / int64(limit)
+	if total%int64(limit) > 0 {
+		totalPages++
+	}
+	return response.Success(c, fiber.StatusOK, dto.AdminConversationListResponse{
+		Data: data,
+		Pagination: dto.PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
 	})
 }
 

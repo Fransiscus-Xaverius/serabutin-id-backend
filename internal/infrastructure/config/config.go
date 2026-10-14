@@ -35,6 +35,11 @@ type Config struct {
 
 	AdminEmails []string
 
+	// Ticket 8: chat backend service-to-service proxy for admin
+	// conversation metadata (metadata only, never message content).
+	ChatBackendBaseURL string
+	ChatServiceToken   string
+
 	StorageDriver      string
 	StorageLocalPath   string
 	StorageLocalURL    string
@@ -146,6 +151,9 @@ func Load() (*Config, error) {
 	cfg.StorageS3SecretKey = viper.GetString("STORAGE_S3_SECRET_KEY")
 	cfg.StorageS3UseSSL = viper.GetBool("STORAGE_S3_USE_SSL")
 	cfg.StorageS3URLPrefix = viper.GetString("STORAGE_S3_URL_PREFIX")
+
+	cfg.ChatBackendBaseURL = viper.GetString("CHAT_BACKEND_BASE_URL")
+	cfg.ChatServiceToken = viper.GetString("CHAT_SERVICE_TOKEN")
 
 	if err := ValidateSecrets(cfg.Environment, cfg.JWTSecret, cfg.JWTRefreshSecret); err != nil {
 		return nil, err

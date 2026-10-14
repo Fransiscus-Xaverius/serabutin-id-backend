@@ -83,6 +83,11 @@ func (m *mockUserRepo) UpdateRole(ctx context.Context, id uint, role string) err
 	return args.Error(0)
 }
 
+func (m *mockUserRepo) UpdateChatBlocked(ctx context.Context, id uint, blocked bool) error {
+	args := m.Called(ctx, id, blocked)
+	return args.Error(0)
+}
+
 type mockLoginLimiter struct {
 	mock.Mock
 }

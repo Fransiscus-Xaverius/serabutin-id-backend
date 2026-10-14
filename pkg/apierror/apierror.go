@@ -37,6 +37,12 @@ func FromDomainError(err error) *APIError {
 		if domainErr.Code == "INVALID_STATUS_TRANSITION" {
 			return NewAPIError(fiber.StatusUnprocessableEntity, domainErr.Code, domainErr.Message)
 		}
+		// The admin chat-safety proxy reports a down/unconfigured chat
+		// backend with this code; it maps to 502 while keeping the code so
+		// operators can distinguish it from local 500s.
+		if domainErr.Code == "CHAT_DIRECTORY_UNAVAILABLE" {
+			return NewAPIError(fiber.StatusBadGateway, domainErr.Code, domainErr.Message)
+		}
 		switch {
 		case errors.Is(domainErr.Unwrap(), apperror.ErrNotFound):
 			return NewAPIError(fiber.StatusNotFound, domainErr.Code, domainErr.Message)

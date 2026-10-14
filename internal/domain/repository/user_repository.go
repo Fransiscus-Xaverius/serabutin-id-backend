@@ -16,6 +16,8 @@ type UserRepository interface {
 	List(ctx context.Context, filter UserFilter) ([]*entity.User, int64, error)
 	UpdateStatus(ctx context.Context, id uint, status string) error
 	UpdateRole(ctx context.Context, id uint, role string) error
+	// UpdateChatBlocked writes only the chat_blocked column (ticket 8).
+	UpdateChatBlocked(ctx context.Context, id uint, blocked bool) error
 }
 
 type UserFilter struct {
