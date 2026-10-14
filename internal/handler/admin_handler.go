@@ -128,9 +128,14 @@ func (h *AdminHandler) GetBooking(c fiber.Ctx) error {
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
+	var scheduleDate *string
+	if booking.ScheduleDate != nil {
+		s := booking.ScheduleDate.Format("2006-01-02")
+		scheduleDate = &s
+	}
 	resp := dto.BookingResponse{
 		ID:             booking.ID,
-		ScheduleDate:   booking.ScheduleDate.Format("2006-01-02"),
+		ScheduleDate:   scheduleDate,
 		ScheduleTime:   booking.ScheduleTime,
 		Address:        booking.Address,
 		Notes:          booking.Notes,
