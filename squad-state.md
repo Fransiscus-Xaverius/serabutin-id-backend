@@ -8,8 +8,8 @@ Target repos: `serabutin-id-backend` (tickets 1–2, 4–13 backend slices), `se
 - [x] 3 — Admin Users page, status: done, attempts: 1, last: ok
 - [x] 4 — Jasa moderation queue, status: done, attempts: 0, last: ok
 - [x] 5 — Bookings ops, status: done, attempts: 1, last: ok
-- [ ] 6 — Reviews/reports queue, status: in-progress (built, awaiting QA), attempts: 0, last: —
-- [ ] 7 — Dashboard stats, status: pending, attempts: 0, last: —
+- [x] 6 — Reviews/reports queue, status: done, attempts: 0, last: ok
+- [ ] 7 — Dashboard stats, status: in-progress (built, awaiting QA), attempts: 0, last: —
 - [ ] 8 — Chat safety, status: pending, attempts: 0, last: —
 - [ ] 9 — Broadcasts, status: pending, attempts: 0, last: —
 - [ ] 10 — CMS + categories, status: pending, attempts: 0, last: —

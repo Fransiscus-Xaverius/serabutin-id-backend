@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
@@ -27,6 +28,7 @@ type AdminHandler struct {
 	adminServiceUC *usecase.AdminServiceUsecase
 	adminBookingUC *usecase.AdminBookingUsecase
 	adminReviewUC  *usecase.AdminReviewUsecase
+	adminStatsUC   *usecase.AdminStatsUsecase
 	imageResolver  repository.StorageRepository
 }
 
@@ -61,6 +63,26 @@ func NewAdminHandler(
 // shape — relied on by existing handler tests — stays stable.
 func (h *AdminHandler) SetAdminReviewUC(uc *usecase.AdminReviewUsecase) {
 	h.adminReviewUC = uc
+}
+
+// SetAdminStatsUC attaches the platform-stats usecase. Kept as a setter
+// (mirroring the review pattern) so the established constructor shape —
+// relied on by existing handler tests — stays stable.
+func (h *AdminHandler) SetAdminStatsUC(uc *usecase.AdminStatsUsecase) {
+	h.adminStatsUC = uc
+}
+
+// GetStats returns the read-only platform health aggregates for the admin
+// Overview tab (users, bookings, GMV, services, reports). GETs are never
+// audit-logged by middleware.AdminAuditLogger. Admin-only.
+func (h *AdminHandler) GetStats(c fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
+	defer cancel()
+	stats, err := h.adminStatsUC.GetAdminStats(ctx)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	return response.Success(c, fiber.StatusOK, stats)
 }
 
 func (h *AdminHandler) ListCancellations(c fiber.Ctx) error {

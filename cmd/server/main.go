@@ -139,8 +139,10 @@ func main() {
 	adminBookingUsecase := usecase.NewAdminBookingUsecase(bookingRepo, cancelRepo)
 	adminBookingUsecase.SetNotifier(notificationUsecase)
 	adminReviewUsecase := usecase.NewAdminReviewUsecase(reviewRepo, gormrepo.NewReportRepository(db))
+	adminStatsUsecase := usecase.NewAdminStatsUsecase(gormrepo.NewAdminStatsRepository(db))
 	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo, adminUserUsecase, adminServiceUsecase, storageRepo, adminBookingUsecase)
 	adminHandler.SetAdminReviewUC(adminReviewUsecase)
+	adminHandler.SetAdminStatsUC(adminStatsUsecase)
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
@@ -244,6 +246,7 @@ func main() {
 	admin.Use(middleware.AdminAuditLogger(auditRepo, logger.Log))
 	admin.Get("/cancellations", adminHandler.ListCancellations)
 	admin.Get("/notifications", adminHandler.ListNotifications)
+	admin.Get("/stats", adminHandler.GetStats)
 	admin.Get("/bookings", adminHandler.ListBookings)
 	admin.Get("/bookings/:id", adminHandler.GetBooking)
 	admin.Patch("/bookings/:id/cancel", adminHandler.CancelBooking)
