@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/service"
-	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -123,6 +123,10 @@ func (uc *AuthUsecase) Login(ctx context.Context, identifier, password string) (
 		return nil, nil, err
 	}
 
+	if user.Status == entity.UserStatusSuspended {
+		return nil, nil, apperror.NewDomainError(apperror.ErrAccountSuspended, "ACCOUNT_SUSPENDED", "Akun ditangguhkan. Hubungi support.")
+	}
+
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
 		_ = uc.loginLimiter.RecordFailure(ctx, identifier)
 		return nil, nil, apperror.NewDomainError(apperror.ErrInvalidCredentials, "INVALID_CREDENTIALS", "invalid email/whatsapp or password")
@@ -189,6 +193,10 @@ func (uc *AuthUsecase) RefreshToken(ctx context.Context, refreshTokenStr string)
 	if err != nil {
 		log.Printf("[AuthUsecase.RefreshToken] find user error: %v", err)
 		return nil, err
+	}
+
+	if user.Status == entity.UserStatusSuspended {
+		return nil, apperror.NewDomainError(apperror.ErrAccountSuspended, "ACCOUNT_SUSPENDED", "Akun ditangguhkan. Hubungi support.")
 	}
 
 	td, err := uc.tokenService.GenerateTokenPair(user.ID, user.Email)

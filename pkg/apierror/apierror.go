@@ -52,6 +52,8 @@ func FromDomainError(err error) *APIError {
 			return NewAPIError(fiber.StatusUnauthorized, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrForbidden):
 			return NewAPIError(fiber.StatusForbidden, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrAccountSuspended):
+			return NewAPIError(fiber.StatusForbidden, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrNotServiceOwner):
 			return NewAPIError(fiber.StatusForbidden, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrNotBookingParticipant):

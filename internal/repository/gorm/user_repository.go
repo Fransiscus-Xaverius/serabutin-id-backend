@@ -19,12 +19,16 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 }
 
 func (r *UserRepository) Create(ctx context.Context, user *entity.User) error {
+	if user.Status == "" {
+		user.Status = entity.UserStatusActive
+	}
 	m := &model.UserModel{
 		Email:        user.Email,
 		Password:     user.Password,
 		Name:         user.Name,
 		WhatsApp:     user.WhatsApp,
 		Role:         user.Role,
+		Status:       user.Status,
 		Bio:          user.Bio,
 		AvatarURL:    user.AvatarURL,
 		Address:      user.Address,
@@ -59,6 +63,7 @@ func (r *UserRepository) Update(ctx context.Context, user *entity.User) error {
 		Name:         user.Name,
 		WhatsApp:     user.WhatsApp,
 		Role:         user.Role,
+		Status:       user.Status,
 		Bio:          user.Bio,
 		AvatarURL:    user.AvatarURL,
 		Address:      user.Address,
@@ -145,6 +150,7 @@ func (r *UserRepository) toEntity(m *model.UserModel) *entity.User {
 		Name:         m.Name,
 		WhatsApp:     m.WhatsApp,
 		Role:         m.Role,
+		Status:       m.Status,
 		Bio:          m.Bio,
 		AvatarURL:    m.AvatarURL,
 		Address:      m.Address,

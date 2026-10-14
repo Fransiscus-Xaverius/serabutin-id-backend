@@ -2,6 +2,11 @@ package entity
 
 import "time"
 
+const (
+	UserStatusActive    = "active"
+	UserStatusSuspended = "suspended"
+)
+
 type User struct {
 	ID           uint
 	Email        string
@@ -9,6 +14,7 @@ type User struct {
 	Name         string
 	WhatsApp     string
 	Role         string
+	Status       string
 	Bio          string
 	AvatarURL    string
 	Address      string
