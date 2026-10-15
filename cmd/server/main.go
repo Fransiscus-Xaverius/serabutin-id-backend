@@ -91,7 +91,7 @@ func main() {
 	// before the column (AutoMigrate below only adds it on fresh tables).
 	db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_blocked boolean NOT NULL DEFAULT false`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_chat_blocked ON users (chat_blocked)`)
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}, &model.ReimbursementModel{}, &model.PayoutMarkModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
@@ -162,6 +162,13 @@ func main() {
 	adminCMSUC := usecase.NewAdminCMSUsecase(bannerRepo, categoryRepo)
 	adminHandler.SetAdminCMSUC(adminCMSUC)
 	cmsHandler := handler.NewCmsHandler(adminCMSUC)
+	// Ticket 11: finance overview (derived from bookings) + provider-filed
+	// reimbursements with admin approve/reject as decision-record only.
+	financeRepo := gormrepo.NewFinanceRepository(db)
+	reimbRepo := gormrepo.NewReimbursementRepository(db)
+	adminFinanceUC := usecase.NewAdminFinanceUsecase(financeRepo, reimbRepo, bookingRepo)
+	adminHandler.SetAdminFinanceUC(adminFinanceUC)
+	reimbursementHandler := handler.NewReimbursementHandler(adminFinanceUC)
 	serviceUsecase.SetCategoryRepository(categoryRepo)
 	if seeded, err := adminCMSUC.EnsureSeedCategories(context.Background()); err != nil {
 		logger.Log.Error().Err(err).Msg("failed to seed service taxonomy")
@@ -265,6 +272,7 @@ func main() {
 	protected.Get("/notifications", notificationHandler.List)
 	protected.Get("/notifications/stream", notificationHandler.Stream)
 	protected.Patch("/notifications/:id/read", notificationHandler.MarkRead)
+	protected.Post("/reimbursements", reimbursementHandler.File)
 
 	admin := api.Group("/admin")
 	admin.Use(authMiddleware.Authenticate())
@@ -304,6 +312,13 @@ func main() {
 	admin.Post("/categories", adminHandler.CreateCategory)
 	admin.Patch("/categories/:id", adminHandler.UpdateCategory)
 	admin.Delete("/categories/:id", adminHandler.DeleteCategory)
+	admin.Get("/finance/overview", adminHandler.GetFinanceOverview)
+	admin.Get("/finance/summary", adminHandler.GetFinanceSummary)
+	admin.Get("/transactions", adminHandler.ListTransactions)
+	admin.Get("/payouts", adminHandler.ListPayouts)
+	admin.Post("/payouts/mark", adminHandler.MarkPayoutPaid)
+	admin.Get("/reimbursements", adminHandler.ListReimbursements)
+	admin.Patch("/reimbursements/:id", adminHandler.DecideReimbursement)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 

@@ -9,6 +9,235 @@ info:
 servers:
   - url: http://localhost:3000/api/v1
 paths:
+  /admin/finance/overview:
+    get:
+      tags: [Admin]
+      summary: Finance overview (summary aggregates + transactions + payouts in one payload)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+          description: Inclusive lower bound (YYYY-MM-DD) against bookings.created_at.
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+          description: Inclusive upper bound (YYYY-MM-DD) against bookings.created_at.
+        - name: period
+          in: query
+          schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' }
+          description: Payout month (YYYY-MM). Defaults to the current UTC month.
+      responses:
+        '200':
+          description: Combined finance view. No money movement; payouts are computed from completed bookings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/FinanceOverview' }
+  /admin/finance/summary:
+    get:
+      tags: [Admin]
+      summary: GMV/fees/refunds windows plus by-payment-method split
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Finance-shaped aggregates derived from bookings (no ledger in v1).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/FinanceSummary' }
+  /admin/transactions:
+    get:
+      tags: [Admin]
+      summary: Transactions derived from bookings (id, parties, amounts, status, date)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: payment_method
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 50 }
+      responses:
+        '200':
+          description: Paginated transaction rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/FinanceTransaction' }
+                      pagination: { $ref: '#/components/schemas/PaginationMeta' }
+  /admin/payouts:
+    get:
+      tags: [Admin]
+      summary: Provider earnings per month derived from completed bookings (paid = manual mark in v1)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: period
+          in: query
+          schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' }
+          description: Payout month (YYYY-MM). Defaults to the current UTC month.
+      responses:
+        '200':
+          description: Per-provider gross/fee/net rows with manual paid marks.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/FinancePayout' }
+  /admin/payouts/mark:
+    post:
+      tags: [Admin]
+      summary: Manually mark a provider period payout as paid (decision record only, no money movement)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id, period, reason]
+              properties:
+                provider_id: { type: integer }
+                period: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' }
+                reason: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Payout mark recorded (audit-logged automatically).
+        '400':
+          description: Missing provider_id, period, or reason.
+  /admin/reimbursements:
+    get:
+      tags: [Admin]
+      summary: Reimbursement queue filed by providers
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, approved, rejected] }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 50 }
+      responses:
+        '200':
+          description: Paginated reimbursement rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Reimbursement' }
+                      pagination: { $ref: '#/components/schemas/PaginationMeta' }
+  /admin/reimbursements/{id}:
+    patch:
+      tags: [Admin]
+      summary: Approve/reject a reimbursement (decision record only, no money movement in v1)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, reason]
+              properties:
+                decision: { type: string, enum: [approved, rejected] }
+                reason: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Decision recorded (audit-logged automatically).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/Reimbursement' }
+        '400':
+          description: Missing decision or reason.
+        '422':
+          description: Reimbursement already decided (terminal).
+  /reimbursements:
+    post:
+      tags: [Reimbursements]
+      summary: Provider files a reimbursement linked to their booking (status pending)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [booking_id, amount, reason]
+              properties:
+                booking_id: { type: integer }
+                amount: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 1 }
+                evidence_url: { type: string }
+      responses:
+        '201':
+          description: Reimbursement filed as pending.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/Reimbursement' }
+        '400':
+          description: Missing booking_id, amount, or reason.
+        '403':
+          description: Filer is not the booking provider.
   /admin/chat/conversations:
     get:
       tags: [Admin]
@@ -108,3 +337,63 @@ components:
         limit: { type: integer }
         total: { type: integer }
         total_pages: { type: integer }
+    FinanceSummary:
+      type: object
+      required: [gmv, platform_fees, by_payment_method, completed_count, cancelled_count]
+      properties:
+        gmv: { type: integer }
+        platform_fees: { type: integer }
+        by_payment_method:
+          type: object
+          additionalProperties: { type: integer }
+        completed_count: { type: integer }
+        cancelled_count: { type: integer }
+    FinanceTransaction:
+      type: object
+      required: [id, customer_id, provider_id, service_id, sub_total, platform_fee, total, payment_method, status, created_at]
+      properties:
+        id: { type: integer }
+        customer_id: { type: integer }
+        provider_id: { type: integer }
+        service_id: { type: integer }
+        sub_total: { type: integer }
+        platform_fee: { type: integer }
+        total: { type: integer }
+        payment_method: { type: string }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+    FinancePayout:
+      type: object
+      required: [provider_id, period, gross, fee, net, status]
+      properties:
+        provider_id: { type: integer }
+        period: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' }
+        gross: { type: integer }
+        fee: { type: integer }
+        net: { type: integer }
+        status: { type: string, enum: [pending, paid] }
+    FinanceOverview:
+      type: object
+      required: [summary, transactions, payouts]
+      properties:
+        summary: { $ref: '#/components/schemas/FinanceSummary' }
+        transactions:
+          type: array
+          items: { $ref: '#/components/schemas/FinanceTransaction' }
+        payouts:
+          type: array
+          items: { $ref: '#/components/schemas/FinancePayout' }
+    Reimbursement:
+      type: object
+      required: [id, booking_id, filed_by, amount, reason, status, created_at]
+      properties:
+        id: { type: integer }
+        booking_id: { type: integer }
+        filed_by: { type: integer }
+        amount: { type: integer }
+        reason: { type: string }
+        evidence_url: { type: string }
+        status: { type: string, enum: [pending, approved, rejected] }
+        decided_by: { type: integer }
+        decided_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
