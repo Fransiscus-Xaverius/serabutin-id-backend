@@ -12,6 +12,21 @@ type IntrospectUsecase struct {
 	tokenService *service.TokenService
 	tokenRepo    repository.TokenRepository
 	userRepo     repository.UserRepository
+	// killGate is the optional ticket-12 kill-switch gate for the chat
+	// signal. Nil means ungated (chat_disabled=false); outage fails open.
+	killGate IntrospectKillGate
+}
+
+// IntrospectKillGate is the read surface the chat signal needs.
+// Implemented by *KillSwitchUsecase.
+type IntrospectKillGate interface {
+	IsEnabled(ctx context.Context, module string) bool
+}
+
+// SetKillSwitchGate attaches the kill-switch gate (ticket 12). Kept as a
+// setter so the established constructor shape stays stable.
+func (uc *IntrospectUsecase) SetKillSwitchGate(gate IntrospectKillGate) {
+	uc.killGate = gate
 }
 
 func NewIntrospectUsecase(
@@ -27,10 +42,11 @@ func NewIntrospectUsecase(
 }
 
 type IntrospectResult struct {
-	Active      bool
-	UserID      uint
-	Email       string
-	ChatBlocked bool
+	Active       bool
+	UserID       uint
+	Email        string
+	ChatBlocked  bool
+	ChatDisabled bool
 }
 
 func (uc *IntrospectUsecase) Introspect(ctx context.Context, tokenStr string) IntrospectResult {
@@ -50,7 +66,17 @@ func (uc *IntrospectUsecase) Introspect(ctx context.Context, tokenStr string) In
 		return IntrospectResult{Active: false}
 	}
 
-	return IntrospectResult{Active: true, UserID: claims.UserID, Email: claims.Email, ChatBlocked: uc.chatBlocked(ctx, claims.UserID)}
+	return IntrospectResult{Active: true, UserID: claims.UserID, Email: claims.Email, ChatBlocked: uc.chatBlocked(ctx, claims.UserID), ChatDisabled: uc.chatDisabled(ctx)}
+}
+
+// chatDisabled reports the ticket-12 kill-switch chat freeze (module or
+// master off). A nil gate or lookup outage fails open (not disabled) and is
+// logged: the chat backend treats a missing signal as not-disabled.
+func (uc *IntrospectUsecase) chatDisabled(ctx context.Context) bool {
+	if uc.killGate == nil {
+		return false
+	}
+	return !uc.killGate.IsEnabled(ctx, "chat")
 }
 
 // chatBlocked reports the ticket-8 chat-only block flag. A lookup failure

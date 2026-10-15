@@ -37,6 +37,8 @@ type AdminHandler struct {
 	adminCMSUC *usecase.AdminCMSUsecase
 	// adminFinanceUC is attached via SetAdminFinanceUC (ticket 11).
 	adminFinanceUC *usecase.AdminFinanceUsecase
+	// killSwitchUC is attached via SetKillSwitchUC (ticket 12).
+	killSwitchUC *usecase.KillSwitchUsecase
 }
 
 func NewAdminHandler(

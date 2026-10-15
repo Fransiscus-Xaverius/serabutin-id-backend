@@ -32,6 +32,32 @@ const dueClaimLimit = 10
 type AdminBroadcastUsecase struct {
 	broadcasts    repository.BroadcastRepository
 	notifications repository.NotificationRepository
+	// killGate is the optional ticket-12 kill-switch gate. Nil means
+	// ungated (fail-open); when set and the broadcasts module (or master)
+	// is off, compose is rejected and the due-poller skips delivery.
+	killGate KillSwitchGate
+}
+
+// KillSwitchGate is the read surface the broadcast gate needs. Implemented
+// by *KillSwitchUsecase. Defined here so this package never imports itself
+// cyclically through middleware.
+type KillSwitchGate interface {
+	IsEnabled(ctx context.Context, module string) bool
+}
+
+// SetKillSwitchGate attaches the kill-switch gate (ticket 12). Kept as a
+// setter so the established constructor shape stays stable.
+func (uc *AdminBroadcastUsecase) SetKillSwitchGate(gate KillSwitchGate) {
+	uc.killGate = gate
+}
+
+// broadcastsDisabled reports the ticket-12 broadcasts freeze. Nil gate or
+// checker outage fails open (delivery allowed).
+func (uc *AdminBroadcastUsecase) broadcastsDisabled(ctx context.Context) bool {
+	if uc.killGate == nil {
+		return false
+	}
+	return !uc.killGate.IsEnabled(ctx, "broadcasts")
 }
 
 func NewAdminBroadcastUsecase(broadcasts repository.BroadcastRepository, notifications repository.NotificationRepository) *AdminBroadcastUsecase {
@@ -74,6 +100,10 @@ func (uc *AdminBroadcastUsecase) CreateBroadcast(ctx context.Context, adminID ui
 	audience = strings.TrimSpace(audience)
 	if scheduledAt != nil && !scheduledAt.After(time.Now()) {
 		return nil, apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_STATUS_TRANSITION", "scheduled_at must be in the future")
+	}
+	// Ticket 12: frozen broadcasts reject compose with 503 MODULE_DISABLED.
+	if uc.broadcastsDisabled(ctx) {
+		return nil, ModuleDisabledError("broadcasts")
 	}
 	b := &entity.Broadcast{
 		Title:       title,
@@ -142,6 +172,12 @@ func (uc *AdminBroadcastUsecase) EstimateRecipients(ctx context.Context, audienc
 // SendDueBroadcasts claims due scheduled rows and delivers each. One bad
 // blast never stops the batch; failed rows are requeued for the next tick.
 func (uc *AdminBroadcastUsecase) SendDueBroadcasts(ctx context.Context) error {
+	// Ticket 12: while broadcasts are frozen, scheduled rows stay queued
+	// (never delivered, never dropped) until the freeze lifts.
+	if uc.broadcastsDisabled(ctx) {
+		log.Printf("[AdminBroadcastUsecase.SendDueBroadcasts] broadcasts frozen, skipping tick")
+		return nil
+	}
 	due, err := uc.broadcasts.ClaimDue(ctx, time.Now(), dueClaimLimit)
 	if err != nil {
 		log.Printf("[AdminBroadcastUsecase.SendDueBroadcasts] claim error: %v", err)

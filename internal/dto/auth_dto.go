@@ -51,10 +51,11 @@ type IntrospectRequest struct {
 }
 
 type IntrospectResponse struct {
-	Active      bool   `json:"active"`
-	UserID      uint   `json:"user_id,omitempty"`
-	Email       string `json:"email,omitempty"`
-	ChatBlocked bool   `json:"chat_blocked,omitempty"`
+	Active       bool   `json:"active"`
+	UserID       uint   `json:"user_id,omitempty"`
+	Email        string `json:"email,omitempty"`
+	ChatBlocked  bool   `json:"chat_blocked,omitempty"`
+	ChatDisabled bool   `json:"chat_disabled,omitempty"`
 }
 
 type MessageResponse struct {

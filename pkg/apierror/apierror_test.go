@@ -78,6 +78,17 @@ func TestFromDomainError_Validation_Returns400(t *testing.T) {
 	assert.Equal(t, "validation failed", apiErr.Message)
 }
 
+func TestFromDomainError_ModuleDisabled_Returns503(t *testing.T) {
+	t.Parallel()
+
+	domainErr := apperror.NewDomainError(apperror.ErrModuleDisabled, "MODULE_DISABLED", "module 'bookings' is temporarily disabled")
+	apiErr := FromDomainError(domainErr)
+
+	assert.Equal(t, fiber.StatusServiceUnavailable, apiErr.HTTPCode)
+	assert.Equal(t, "MODULE_DISABLED", apiErr.Code)
+	assert.Contains(t, apiErr.Message, "bookings")
+}
+
 func TestFromDomainError_Unknown_Returns500(t *testing.T) {
 	t.Parallel()
 

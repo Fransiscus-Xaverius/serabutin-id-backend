@@ -49,6 +49,12 @@ func FromDomainError(err error) *APIError {
 		if domainErr.Code == "CHAT_DIRECTORY_UNAVAILABLE" {
 			return NewAPIError(fiber.StatusBadGateway, domainErr.Code, domainErr.Message)
 		}
+		// Ticket 12: kill-switch gates report a disabled module with this
+		// code; it maps to 503 so clients can distinguish a freeze from a
+		// generic 400, with the module named in the message.
+		if domainErr.Code == "MODULE_DISABLED" {
+			return NewAPIError(fiber.StatusServiceUnavailable, domainErr.Code, domainErr.Message)
+		}
 		switch {
 		case errors.Is(domainErr.Unwrap(), apperror.ErrNotFound):
 			return NewAPIError(fiber.StatusNotFound, domainErr.Code, domainErr.Message)

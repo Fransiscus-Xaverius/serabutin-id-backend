@@ -91,7 +91,7 @@ func main() {
 	// before the column (AutoMigrate below only adds it on fresh tables).
 	db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_blocked boolean NOT NULL DEFAULT false`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_chat_blocked ON users (chat_blocked)`)
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}, &model.ReimbursementModel{}, &model.PayoutMarkModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}, &model.ReimbursementModel{}, &model.PayoutMarkModel{}, &model.KillSwitchModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
@@ -153,6 +153,23 @@ func main() {
 	broadcastRepo := gormrepo.NewBroadcastRepository(db)
 	adminBroadcastUC := usecase.NewAdminBroadcastUsecase(broadcastRepo, notificationRepo)
 	adminHandler.SetAdminBroadcastUC(adminBroadcastUC)
+	// Ticket 12: kill-switch hybrid store (DB durable intent + Redis
+	// runtime). Admin writes land in DB first, then publish to Redis; boot
+	// seeds all-enabled rows and reloads Redis from DB. Failures here are
+	// logged, never fatal — hot paths fail open without runtime state.
+	killSwitchUC := usecase.NewKillSwitchUsecase(
+		gormrepo.NewKillSwitchRepository(db),
+		usecase.NewRedisKillSwitchCache(redisClient),
+	)
+	if err := killSwitchUC.EnsureSeeded(context.Background()); err != nil {
+		logger.Log.Error().Err(err).Msg("failed to seed kill switches")
+	}
+	if err := killSwitchUC.SyncToRedis(context.Background()); err != nil {
+		logger.Log.Error().Err(err).Msg("failed to sync kill switches to redis")
+	}
+	adminHandler.SetKillSwitchUC(killSwitchUC)
+	adminBroadcastUC.SetKillSwitchGate(killSwitchUC)
+	introspectUsecase.SetKillSwitchGate(killSwitchUC)
 	// Ticket 10: CMS taxonomy + banners. The taxonomy check is attached to
 	// the provider service flow so create/update validates against active
 	// category rows; the startup seed below backfills live values first so
@@ -225,7 +242,7 @@ func main() {
 	api := app.Group("/api/v1")
 	api.Use(middleware.AuditLogger(logger.Log))
 
-	api.Post("/auth/register", authHandler.Register)
+	api.Post("/auth/register", middleware.RequireModule(killSwitchUC, "registration"), authHandler.Register)
 	api.Post("/auth/login", authHandler.Login)
 	api.Post("/auth/refresh", authHandler.RefreshToken)
 	api.Post("/auth/logout", authHandler.Logout)
@@ -254,7 +271,7 @@ func main() {
 	protected.Delete("/services/:id", serviceHandler.SetStatus)
 	protected.Get("/my-services", serviceHandler.GetMyServices)
 
-	protected.Post("/bookings", bookingHandler.Create)
+	protected.Post("/bookings", middleware.RequireModule(killSwitchUC, "bookings"), bookingHandler.Create)
 	protected.Post("/bids", bidHandler.Create)
 	protected.Get("/bids/my", bidHandler.GetMyBids)
 	protected.Get("/services/:id/bids", bidHandler.GetByService)
@@ -302,7 +319,7 @@ func main() {
 	admin.Patch("/reports/:id", adminHandler.ResolveReport)
 	admin.Get("/broadcasts", adminHandler.ListBroadcasts)
 	admin.Get("/broadcasts/estimate", adminHandler.EstimateBroadcastRecipients)
-	admin.Post("/broadcasts", adminHandler.CreateBroadcast)
+	admin.Post("/broadcasts", middleware.RequireModule(killSwitchUC, "broadcasts"), adminHandler.CreateBroadcast)
 	admin.Post("/broadcasts/:id/cancel", adminHandler.CancelBroadcast)
 	admin.Get("/banners", adminHandler.ListBanners)
 	admin.Post("/banners", adminHandler.CreateBanner)
@@ -319,6 +336,8 @@ func main() {
 	admin.Post("/payouts/mark", adminHandler.MarkPayoutPaid)
 	admin.Get("/reimbursements", adminHandler.ListReimbursements)
 	admin.Patch("/reimbursements/:id", adminHandler.DecideReimbursement)
+	admin.Get("/kill-switches", adminHandler.ListKillSwitches)
+	admin.Patch("/kill-switches/:module", adminHandler.SetKillSwitch)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 

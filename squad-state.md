@@ -13,8 +13,8 @@ Target repos: `serabutin-id-backend` (tickets 1–2, 4–13 backend slices), `se
 - [x] 8 — Chat safety, status: done, attempts: 1, last: ok
 - [x] 9 — Broadcasts, status: done, attempts: 0, last: ok
 - [x] 10 — CMS + categories, status: done, attempts: 0, last: ok
-- [ ] 11 — Finance overview + reimbursements, status: in-progress (built, awaiting QA), attempts: 0, last: —
-- [ ] 12 — Kill switch, status: pending, attempts: 0, last: —
+- [x] 11 — Finance overview + reimbursements, status: done, attempts: 0, last: ok
+- [ ] 12 — Kill switch, status: in-progress (built, awaiting QA), attempts: 0, last: —
 - [ ] 13 — admin.serabutin.id routing, status: pending, attempts: 0, last: —
 
 Rule: tickets touching `admin_handler.go`/middleware run sequentially; disjoint ones may parallelize.
