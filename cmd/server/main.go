@@ -91,7 +91,7 @@ func main() {
 	// before the column (AutoMigrate below only adds it on fresh tables).
 	db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_blocked boolean NOT NULL DEFAULT false`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_chat_blocked ON users (chat_blocked)`)
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
@@ -150,6 +150,9 @@ func main() {
 	adminHandler.SetAdminReviewUC(adminReviewUsecase)
 	adminHandler.SetAdminStatsUC(adminStatsUsecase)
 	adminHandler.SetAdminChatUC(adminChatUsecase)
+	broadcastRepo := gormrepo.NewBroadcastRepository(db)
+	adminBroadcastUC := usecase.NewAdminBroadcastUsecase(broadcastRepo, notificationRepo)
+	adminHandler.SetAdminBroadcastUC(adminBroadcastUC)
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
@@ -272,8 +275,18 @@ func main() {
 	admin.Patch("/reviews/:id/visibility", adminHandler.SetReviewVisibility)
 	admin.Get("/reports", adminHandler.ListReports)
 	admin.Patch("/reports/:id", adminHandler.ResolveReport)
+	admin.Get("/broadcasts", adminHandler.ListBroadcasts)
+	admin.Get("/broadcasts/estimate", adminHandler.EstimateBroadcastRecipients)
+	admin.Post("/broadcasts", adminHandler.CreateBroadcast)
+	admin.Post("/broadcasts/:id/cancel", adminHandler.CancelBroadcast)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
+
+	// Ticket 9: scheduled-broadcast due-poller (60s ticker, in-app
+	// notifications only). Runs once at startup plus every interval;
+	// stops via context on graceful shutdown.
+	broadcastPollerCtx, stopBroadcastPoller := context.WithCancel(context.Background())
+	usecase.StartBroadcastDuePoller(broadcastPollerCtx, adminBroadcastUC, 60*time.Second)
 
 	go func() {
 		if err := app.Listen(fmt.Sprintf(":%d", cfg.Port)); err != nil {
@@ -286,6 +299,8 @@ func main() {
 	<-quit
 
 	logger.Log.Info().Msg("shutting down server")
+
+	stopBroadcastPoller()
 
 	if err := app.Shutdown(); err != nil {
 		logger.Log.Error().Err(err).Msg("error during shutdown")

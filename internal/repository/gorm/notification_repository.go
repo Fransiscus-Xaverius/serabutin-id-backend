@@ -35,6 +35,33 @@ func (r *NotificationRepository) Create(ctx context.Context, n *entity.Notificat
 	return nil
 }
 
+// broadcastBatchSize bounds one INSERT for fan-out writes (ticket 9).
+const broadcastBatchSize = 500
+
+func (r *NotificationRepository) CreateMany(ctx context.Context, notifications []*entity.Notification) error {
+	if len(notifications) == 0 {
+		return nil
+	}
+	models := make([]model.NotificationModel, len(notifications))
+	for i, n := range notifications {
+		models[i] = model.NotificationModel{
+			UserID: n.UserID,
+			Type:   n.Type,
+			Title:  n.Title,
+			Body:   n.Body,
+			Data:   n.Data,
+		}
+	}
+	if err := r.db.WithContext(ctx).CreateInBatches(models, broadcastBatchSize).Error; err != nil {
+		return apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+	for i := range notifications {
+		notifications[i].ID = models[i].ID
+		notifications[i].CreatedAt = models[i].CreatedAt
+	}
+	return nil
+}
+
 func (r *NotificationRepository) ListByUserID(ctx context.Context, userID uint, page, limit int) ([]*entity.Notification, int64, error) {
 	var total int64
 	if err := r.db.WithContext(ctx).Model(&model.NotificationModel{}).Where("user_id = ?", userID).Count(&total).Error; err != nil {

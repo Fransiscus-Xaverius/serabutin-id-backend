@@ -31,6 +31,8 @@ type AdminHandler struct {
 	adminStatsUC   *usecase.AdminStatsUsecase
 	adminChatUC    *usecase.AdminChatUsecase
 	imageResolver  repository.StorageRepository
+	// adminBroadcastUC is attached via SetAdminBroadcastUC (ticket 9).
+	adminBroadcastUC *usecase.AdminBroadcastUsecase
 }
 
 func NewAdminHandler(
