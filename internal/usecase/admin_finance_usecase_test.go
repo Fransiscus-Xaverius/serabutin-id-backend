@@ -92,6 +92,15 @@ func (f *financeFakeReimbRepo) Decide(ctx context.Context, id uint, decidedBy ui
 	return nil
 }
 
+func (f *financeFakeReimbRepo) FindPendingByBooking(ctx context.Context, bookingID uint) (*entity.Reimbursement, error) {
+	for _, c := range f.claims {
+		if c.BookingID == bookingID && c.Status == entity.ReimbursementPending {
+			return c, nil
+		}
+	}
+	return nil, apperror.NewDomainError(apperror.ErrNotFound, "REIMBURSEMENT_NOT_FOUND", "no pending reimbursement for booking")
+}
+
 type financeFakeBookingRepo struct {
 	bookings map[uint]*entity.Booking
 }

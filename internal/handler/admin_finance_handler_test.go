@@ -82,6 +82,14 @@ func (m *mockReimbRepo) Decide(ctx context.Context, id uint, decidedBy uint, sta
 	return m.Called(ctx, id, decidedBy, status).Error(0)
 }
 
+func (m *mockReimbRepo) FindPendingByBooking(ctx context.Context, bookingID uint) (*entity.Reimbursement, error) {
+	args := m.Called(ctx, bookingID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*entity.Reimbursement), args.Error(1)
+}
+
 type mockFinanceBookingRepo struct {
 	mock.Mock
 }

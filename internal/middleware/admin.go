@@ -26,6 +26,10 @@ func RequireAdmin(loader profileLoader) fiber.Handler {
 		if err != nil || user == nil || user.Role != "admin" {
 			return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusForbidden, "FORBIDDEN", "admin access required"))
 		}
+		// F1: a suspended admin loses /admin access even with a live token.
+		if user.Status == entity.UserStatusSuspended {
+			return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusForbidden, "ACCOUNT_SUSPENDED", "account is suspended"))
+		}
 		return c.Next()
 	}
 }

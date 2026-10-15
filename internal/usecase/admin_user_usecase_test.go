@@ -29,7 +29,7 @@ func TestAdminUserUsecase_Suspend_SetsSuspended(t *testing.T) {
 	mockRepo.On("FindByID", ctx, uint(3)).Return(user, nil)
 	mockRepo.On("UpdateStatus", ctx, uint(3), entity.UserStatusSuspended).Return(nil)
 
-	updated, err := uc.Suspend(ctx, 3)
+	updated, err := uc.Suspend(ctx, 7, 3)
 
 	require.NoError(t, err)
 	require.NotNil(t, updated)
@@ -46,7 +46,7 @@ func TestAdminUserUsecase_Suspend_AlreadySuspended_IsNoopSuccess(t *testing.T) {
 	user := &entity.User{ID: 3, Email: "budi@example.com", Role: "customer", Status: entity.UserStatusSuspended}
 	mockRepo.On("FindByID", ctx, uint(3)).Return(user, nil)
 
-	updated, err := uc.Suspend(ctx, 3)
+	updated, err := uc.Suspend(ctx, 7, 3)
 
 	require.NoError(t, err)
 	require.NotNil(t, updated)
@@ -63,7 +63,7 @@ func TestAdminUserUsecase_Suspend_UserNotFound(t *testing.T) {
 	mockRepo.On("FindByID", ctx, uint(99)).Return(nil,
 		apperror.NewDomainError(apperror.ErrNotFound, "USER_NOT_FOUND", "user not found"))
 
-	updated, err := uc.Suspend(ctx, 99)
+	updated, err := uc.Suspend(ctx, 7, 99)
 
 	require.Error(t, err)
 	assert.Nil(t, updated)

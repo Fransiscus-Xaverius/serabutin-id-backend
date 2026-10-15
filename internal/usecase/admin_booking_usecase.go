@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -55,6 +56,10 @@ func (uc *AdminBookingUsecase) ListBookings(ctx context.Context, filter reposito
 // action. Terminal states (completed, cancelled, rejected) are rejected with
 // INVALID_TRANSITION (422). The cancellation row carries no fee and the
 // admin-override policy version; both parties are notified best-effort.
+// F7: the cancellation insert and the booking flip run in one transaction,
+// so no crash can leave an orphaned cancellation row. A concurrent terminal
+// transition inside the transaction re-reads the booking to keep exact
+// 422/404 semantics.
 func (uc *AdminBookingUsecase) AdminCancelBooking(ctx context.Context, adminID uint, id uint, reason string) (*entity.Booking, *entity.Cancellation, error) {
 	booking, err := uc.bookingRepo.FindByID(ctx, id)
 	if err != nil {
@@ -82,13 +87,22 @@ func (uc *AdminBookingUsecase) AdminCancelBooking(ctx context.Context, adminID u
 	if uc.cancelRepo == nil {
 		return nil, nil, apperror.NewDomainError(apperror.ErrInternalServer, "CANCEL_REPO_MISSING", "cancellation repository not configured")
 	}
-	if err := uc.cancelRepo.Create(ctx, cancellation); err != nil {
-		log.Printf("[AdminBookingUsecase.AdminCancelBooking] create cancellation error: %v", err)
-		return nil, nil, err
-	}
-
-	if err := uc.bookingRepo.UpdateCancel(ctx, id, cancellation.ID, adminID); err != nil {
-		log.Printf("[AdminBookingUsecase.AdminCancelBooking] update cancel error: %v", err)
+	if err := uc.cancelRepo.CreateAndApplyCancel(ctx, cancellation, adminID); err != nil {
+		// The guarded write lost a race: re-read to report the true state
+		// (404 missing vs 422 terminal) instead of leaking the guard code.
+		var domainErr *apperror.DomainError
+		if errors.As(err, &domainErr) && domainErr.Code == "CANCEL_GUARD_FAILED" {
+			if fresh, ferr := uc.bookingRepo.FindByID(ctx, id); ferr != nil {
+				log.Printf("[AdminBookingUsecase.AdminCancelBooking] guard re-read error: %v", ferr)
+				return nil, nil, ferr
+			} else {
+				switch fresh.Status {
+				case "completed", "cancelled", "rejected":
+					return nil, nil, apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_STATUS_TRANSITION", "can only cancel non-terminal bookings")
+				}
+			}
+		}
+		log.Printf("[AdminBookingUsecase.AdminCancelBooking] cancel tx error: %v", err)
 		return nil, nil, err
 	}
 

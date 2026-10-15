@@ -100,17 +100,23 @@ func (r *BroadcastRepository) cancelFailure(ctx context.Context, id uint) error 
 // ClaimDue atomically flips due scheduled rows to sending inside one
 // transaction (SELECT .. FOR UPDATE SKIP LOCKED), so concurrent pollers —
 // or a restart racing the ticker — can never deliver the same blast twice.
+// F5: stuck `sending` rows (updated more than stuckAfter ago — e.g. the
+// process crashed mid-fan-out before Requeue ran) are reclaimed too, so no
+// delivery strands without a retry path. The window is deliberately wider
+// than the 30s in-request instant timeout so a live delivery is never
+// double-claimed.
 func (r *BroadcastRepository) ClaimDue(ctx context.Context, now time.Time, limit int) ([]*entity.Broadcast, error) {
 	if limit < 1 {
 		limit = 10
 	}
+	const stuckAfter = 10 * time.Minute
 	tx := r.db.WithContext(ctx).Begin()
 	if tx.Error != nil {
 		return nil, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", tx.Error.Error())
 	}
 	var ids []uint
-	if err := tx.Raw(`SELECT id FROM broadcasts WHERE status = ? AND scheduled_at IS NOT NULL AND scheduled_at <= ? ORDER BY scheduled_at ASC LIMIT ? FOR UPDATE SKIP LOCKED`,
-		entity.BroadcastStatusScheduled, now, limit).Scan(&ids).Error; err != nil {
+	if err := tx.Raw(`SELECT id FROM broadcasts WHERE (status = ? AND scheduled_at IS NOT NULL AND scheduled_at <= ?) OR (status = ? AND updated_at <= ?) ORDER BY scheduled_at ASC NULLS LAST, id ASC LIMIT ? FOR UPDATE SKIP LOCKED`,
+		entity.BroadcastStatusScheduled, now, entity.BroadcastStatusSending, now.Add(-stuckAfter), limit).Scan(&ids).Error; err != nil {
 		tx.Rollback()
 		return nil, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
 	}
@@ -155,11 +161,15 @@ func (r *BroadcastRepository) MarkSent(ctx context.Context, id uint, recipientCo
 
 // Requeue flips sending -> scheduled so a failed delivery is retried by the
 // ticker instead of dropped. Best-effort: no error when the row already
-// moved on (e.g. cancelled mid-send).
+// moved on (e.g. cancelled mid-send). F5: scheduled_at is reset to now so
+// instant blasts (which have no scheduled_at) become due immediately and
+// are picked up by the next ClaimDue tick instead of stranding as `sending`
+// forever.
 func (r *BroadcastRepository) Requeue(ctx context.Context, id uint) error {
+	now := time.Now()
 	res := r.db.WithContext(ctx).Model(&model.BroadcastModel{}).
 		Where("id = ? AND status = ?", id, entity.BroadcastStatusSending).
-		Updates(map[string]interface{}{"status": entity.BroadcastStatusScheduled, "updated_at": time.Now()})
+		Updates(map[string]interface{}{"status": entity.BroadcastStatusScheduled, "scheduled_at": now, "updated_at": now})
 	if res.Error != nil {
 		return apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", res.Error.Error())
 	}

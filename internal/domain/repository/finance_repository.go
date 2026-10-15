@@ -89,4 +89,8 @@ type ReimbursementRepository interface {
 	FindByID(ctx context.Context, id uint) (*entity.Reimbursement, error)
 	List(ctx context.Context, filter ReimbursementFilter) ([]*entity.Reimbursement, int64, error)
 	Decide(ctx context.Context, id uint, decidedBy uint, status string) error
+	// FindPendingByBooking returns the open (pending) claim for a booking,
+	// or a NotFound domain error when none exists. It backs the F11
+	// one-pending-claim-per-booking rule.
+	FindPendingByBooking(ctx context.Context, bookingID uint) (*entity.Reimbursement, error)
 }

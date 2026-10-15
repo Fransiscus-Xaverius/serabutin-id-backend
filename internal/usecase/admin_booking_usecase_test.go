@@ -58,7 +58,10 @@ func (f *adminBookingFakeRepo) ListForAdmin(ctx context.Context, filter reposito
 	return out, int64(len(out)), nil
 }
 
-type adminBookingFakeCancelRepo struct{ created []*entity.Cancellation }
+type adminBookingFakeCancelRepo struct {
+	created []*entity.Cancellation
+	txErr   error
+}
 
 func (f *adminBookingFakeCancelRepo) Create(ctx context.Context, c *entity.Cancellation) error {
 	c.ID = uint(len(f.created) + 1)
@@ -70,6 +73,12 @@ func (f *adminBookingFakeCancelRepo) FindByBookingID(ctx context.Context, bookin
 }
 func (f *adminBookingFakeCancelRepo) List(ctx context.Context, filter repository.CancellationFilter) ([]*entity.Cancellation, int64, error) {
 	return nil, 0, nil
+}
+func (f *adminBookingFakeCancelRepo) CreateAndApplyCancel(ctx context.Context, c *entity.Cancellation, cancelledBy uint) error {
+	if f.txErr != nil {
+		return f.txErr
+	}
+	return f.Create(ctx, c)
 }
 
 type adminBookingFakeNotifier struct{ calls []uint }

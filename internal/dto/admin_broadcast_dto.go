@@ -2,13 +2,22 @@ package dto
 
 // AdminBroadcastCreateRequest is the compose body. scheduled_at is optional:
 // omit it for an instant blast, or pass a future RFC 3339 timestamp to
-// schedule. No `reason` field — title/body are the auditable content and
-// the admin audit middleware records the action automatically.
+// schedule. `reason` is optional (F13): title/body remain the auditable
+// content, and a supplied reason is persisted to the audit row by the admin
+// audit middleware.
 type AdminBroadcastCreateRequest struct {
 	Title       string  `json:"title"`
 	Body        string  `json:"body"`
 	Audience    string  `json:"audience"`
 	ScheduledAt *string `json:"scheduled_at"`
+	Reason      *string `json:"reason"`
+}
+
+// AdminBroadcastCancelRequest is the cancel body. `reason` is optional
+// (F13): when present it is persisted to the audit row by the admin audit
+// middleware.
+type AdminBroadcastCancelRequest struct {
+	Reason *string `json:"reason"`
 }
 
 // AdminBroadcastResponse is one broadcast history row.

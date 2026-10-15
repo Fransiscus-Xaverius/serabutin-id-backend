@@ -244,6 +244,21 @@ func (r *ReimbursementRepository) FindByID(ctx context.Context, id uint) (*entit
 	return toReimbursementEntity(&m), nil
 }
 
+// FindPendingByBooking returns the open claim for a booking, or a NotFound
+// domain error when none exists (F11: one pending claim per booking).
+func (r *ReimbursementRepository) FindPendingByBooking(ctx context.Context, bookingID uint) (*entity.Reimbursement, error) {
+	var m model.ReimbursementModel
+	if err := r.db.WithContext(ctx).
+		Where("booking_id = ? AND status = ?", bookingID, entity.ReimbursementPending).
+		Order("id DESC").First(&m).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, apperror.NewDomainError(apperror.ErrNotFound, "REIMBURSEMENT_NOT_FOUND", "no pending reimbursement for booking")
+		}
+		return nil, dbError("find pending reimbursement", err)
+	}
+	return toReimbursementEntity(&m), nil
+}
+
 // List returns the queue newest-first with optional status filter.
 func (r *ReimbursementRepository) List(ctx context.Context, filter repository.ReimbursementFilter) ([]*entity.Reimbursement, int64, error) {
 	page, limit := filter.Page, filter.Limit

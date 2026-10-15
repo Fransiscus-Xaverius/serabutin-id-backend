@@ -91,6 +91,10 @@ func (m *mockAdminBookingCancelRepo) List(ctx context.Context, filter repository
 	}
 	return args.Get(0).([]*entity.Cancellation), args.Get(1).(int64), args.Error(2)
 }
+func (m *mockAdminBookingCancelRepo) CreateAndApplyCancel(ctx context.Context, c *entity.Cancellation, cancelledBy uint) error {
+	c.ID = 9
+	return m.Called(ctx, c, cancelledBy).Error(0)
+}
 
 func newAdminBookingTestApp(t *testing.T, bookingRepo repository.BookingRepository, cancelRepo repository.CancellationRepository) *fiber.App {
 	t.Helper()
@@ -190,8 +194,7 @@ func TestAdminHandler_CancelBooking_Pending_200(t *testing.T) {
 	bookingRepo.On("FindByID", ctx, uint(42)).Return(&entity.Booking{
 		ID: 42, CustomerID: 10, ProviderID: 20, Status: "pending", SubTotal: 75000, PlatformFee: 5000,
 	}, nil)
-	cancelRepo.On("Create", ctx, mock.AnythingOfType("*entity.Cancellation")).Return(nil)
-	bookingRepo.On("UpdateCancel", ctx, uint(42), uint(9), uint(7)).Return(nil)
+	cancelRepo.On("CreateAndApplyCancel", ctx, mock.AnythingOfType("*entity.Cancellation"), uint(7)).Return(nil)
 	app := newAdminBookingTestApp(t, bookingRepo, cancelRepo)
 
 	status, body := doAdminBookingRequest(t, app, "PATCH", "/api/v1/admin/bookings/42/cancel", `{"reason":"penipuan terkonfirmasi"}`)

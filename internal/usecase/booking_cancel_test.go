@@ -60,6 +60,9 @@ func (f *cancelFakeCancelRepo) FindByBookingID(ctx context.Context, bookingID ui
 func (f *cancelFakeCancelRepo) List(ctx context.Context, filter repository.CancellationFilter) ([]*entity.Cancellation, int64, error) {
 	return nil, 0, nil
 }
+func (f *cancelFakeCancelRepo) CreateAndApplyCancel(ctx context.Context, c *entity.Cancellation, cancelledBy uint) error {
+	return f.Create(ctx, c)
+}
 
 func newCancelTestUC(status string) (*BookingUsecase, *cancelFakeCancelRepo) {
 	bookingRepo := &cancelFakeBookingRepo{bookings: map[uint]*entity.Booking{

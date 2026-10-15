@@ -18,6 +18,9 @@ type UserRepository interface {
 	UpdateRole(ctx context.Context, id uint, role string) error
 	// UpdateChatBlocked writes only the chat_blocked column (ticket 8).
 	UpdateChatBlocked(ctx context.Context, id uint, blocked bool) error
+	// CountActiveAdmins counts users with role=admin and status=active.
+	// It backs the last-admin guard on suspend/demote (F8).
+	CountActiveAdmins(ctx context.Context) (int64, error)
 }
 
 type UserFilter struct {

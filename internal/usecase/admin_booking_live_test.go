@@ -2,6 +2,8 @@ package usecase
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +17,10 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	gormrepo "github.com/serabutin/serabutin-id-backend/internal/repository/gorm"
 	"github.com/serabutin/serabutin-id-backend/internal/repository/model"
+	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
 )
 
 // Live-DB regression test for the admin force-cancel 500: the force-cancel
@@ -98,6 +102,71 @@ func TestAdminCancelBookingLive_LongestValuesRoundTrip(t *testing.T) {
 	assert.Equal(t, longReason, got.Reason)
 	assert.Equal(t, AdminCancellationPolicyVersion, got.PolicyVersion)
 	assert.Equal(t, "admin", got.CancelledByRole)
+}
+
+func TestAdminCancelBookingLive_ConcurrentForceCancel(t *testing.T) {
+	db := setupAdminCancelLiveDB(t)
+	ctx := context.Background()
+	bookingRepo := gormrepo.NewBookingRepository(db)
+	cancelRepo := gormrepo.NewCancellationRepository(db)
+	uc := NewAdminBookingUsecase(bookingRepo, cancelRepo)
+
+	id := 0
+	// Race several bookings so the INSERT-level collision (not just the
+	// pre-check path) is exercised live; every race must end 1×200 + 1×422
+	// with zero 500s. The unique index guarantees at most one winner, and
+	// the F7 mapping turns the loser's unique violation into the
+	// terminal-state outcome.
+	var succeeded, terminal int
+	for i := 0; i < 10; i++ {
+		id = int(seedLiveBooking(t, ctx, bookingRepo, "pending"))
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		for j := 0; j < 2; j++ {
+			go func() {
+				<-start
+				_, _, err := uc.AdminCancelBooking(ctx, 7, uint(id), "sengketa ganda")
+				errs <- err
+			}()
+		}
+		close(start)
+		for j := 0; j < 2; j++ {
+			err := <-errs
+			if err == nil {
+				succeeded++
+				continue
+			}
+			assert.NotErrorIs(t, err, apperror.ErrInternalServer, "loser must not see a 500")
+			assert.Equal(t, http.StatusUnprocessableEntity, apierror.FromDomainError(err).HTTPCode)
+			var domainErr *apperror.DomainError
+			if assert.ErrorAs(t, err, &domainErr) {
+				assert.Equal(t, "INVALID_STATUS_TRANSITION", domainErr.Code)
+				terminal++
+			}
+		}
+	}
+	assert.Equal(t, 10, succeeded, "exactly one force-cancel wins each race")
+	assert.Equal(t, 10, terminal, "each loser reports 422 INVALID_STATUS_TRANSITION")
+
+	var n int64
+	require.NoError(t, db.WithContext(ctx).Model(&model.CancellationModel{}).Where("booking_id = ?", id).Count(&n).Error)
+	assert.Equal(t, int64(1), n)
+
+	// Deterministic cover for the unique-violation mapping: a sequential
+	// second attempt at the repo layer hits the booking_id unique index
+	// and must surface CANCEL_GUARD_FAILED, not DB_ERROR.
+	retry := &entity.Cancellation{
+		BookingID: uint(id), CancelledBy: 7, CancelledByRole: "admin",
+		Reason: "admin_override:duplikat", PolicyVersion: AdminCancellationPolicyVersion,
+	}
+	rerr := cancelRepo.CreateAndApplyCancel(ctx, retry, 7)
+	require.Error(t, rerr)
+	assert.NotErrorIs(t, rerr, apperror.ErrInternalServer)
+	var rdomainErr *apperror.DomainError
+	if assert.ErrorAs(t, rerr, &rdomainErr) {
+		assert.Equal(t, "CANCEL_GUARD_FAILED", rdomainErr.Code)
+	}
+	assert.True(t, errors.Is(rerr, apperror.ErrInvalidTransition))
 }
 
 func TestAdminCancelBookingLive_EndToEndWritesRow(t *testing.T) {

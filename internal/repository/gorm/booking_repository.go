@@ -136,10 +136,20 @@ func (r *BookingRepository) FindByUserID(ctx context.Context, userID uint, role 
 
 // ListForAdmin serves the admin bookings queue: optional status, customer,
 // provider, and schedule-date-range filters. Ordered newest first by id,
-// which is stable for offset pagination.
+// which is stable for offset pagination. Page/limit are clamped like the
+// user directory (page<1→1, limit outside 1..50→20) so negative pages can
+// never produce a negative OFFSET.
 func (r *BookingRepository) ListForAdmin(ctx context.Context, filter repository.AdminBookingFilter) ([]*entity.Booking, int64, error) {
 	var models []model.BookingModel
 	var total int64
+
+	page, limit := filter.Page, filter.Limit
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
 
 	query := r.db.WithContext(ctx).Model(&model.BookingModel{})
 
@@ -171,12 +181,12 @@ func (r *BookingRepository) ListForAdmin(ctx context.Context, filter repository.
 		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
 	}
 
-	offset := (filter.Page - 1) * filter.Limit
+	offset := (page - 1) * limit
 	err := query.
 		Preload("BookingAddOns").
 		Order("bookings.id DESC").
 		Offset(offset).
-		Limit(filter.Limit).
+		Limit(limit).
 		Find(&models).Error
 	if err != nil {
 		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())

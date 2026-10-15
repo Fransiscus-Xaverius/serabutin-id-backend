@@ -454,6 +454,7 @@ func requireMutationReason(c fiber.Ctx) (string, error) {
 }
 
 // SuspendUser sets users.status=suspended (idempotent 200 on no-op).
+// Self-suspend is 403, as is suspending the last active admin.
 func (h *AdminHandler) SuspendUser(c fiber.Ctx) error {
 	if _, err := requireMutationReason(c); err != nil {
 		return apierror.GlobalErrorHandler(c, err)
@@ -462,7 +463,7 @@ func (h *AdminHandler) SuspendUser(c fiber.Ctx) error {
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid user ID"))
 	}
-	user, err := h.adminUserUC.Suspend(c.Context(), uint(id))
+	user, err := h.adminUserUC.Suspend(c.Context(), requestctx.GetUserID(c), uint(id))
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}

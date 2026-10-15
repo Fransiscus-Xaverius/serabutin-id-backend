@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 
+	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/service"
 )
@@ -66,7 +67,24 @@ func (uc *IntrospectUsecase) Introspect(ctx context.Context, tokenStr string) In
 		return IntrospectResult{Active: false}
 	}
 
-	return IntrospectResult{Active: true, UserID: claims.UserID, Email: claims.Email, ChatBlocked: uc.chatBlocked(ctx, claims.UserID), ChatDisabled: uc.chatDisabled(ctx)}
+	// F2: a suspended account introspects as inactive so downstream consumers
+	// (chat token exchange) refuse fresh mints for it. The directory lookup
+	// is the same single read that feeds the chat_blocked signal below.
+	user, err := uc.lookupUser(ctx, claims.UserID)
+	if err != nil {
+		log.Printf("[IntrospectUsecase.Introspect] user lookup failed for user %d: %v", claims.UserID, err)
+		return IntrospectResult{Active: true, UserID: claims.UserID, Email: claims.Email, ChatBlocked: false, ChatDisabled: uc.chatDisabled(ctx)}
+	}
+	if user != nil && user.Status == entity.UserStatusSuspended {
+		log.Printf("[IntrospectUsecase.Introspect] user %d is suspended, reporting inactive", claims.UserID)
+		return IntrospectResult{Active: false}
+	}
+
+	blocked := false
+	if user != nil {
+		blocked = user.ChatBlocked
+	}
+	return IntrospectResult{Active: true, UserID: claims.UserID, Email: claims.Email, ChatBlocked: blocked, ChatDisabled: uc.chatDisabled(ctx)}
 }
 
 // chatDisabled reports the ticket-12 kill-switch chat freeze (module or
@@ -79,17 +97,18 @@ func (uc *IntrospectUsecase) chatDisabled(ctx context.Context) bool {
 	return !uc.killGate.IsEnabled(ctx, "chat")
 }
 
-// chatBlocked reports the ticket-8 chat-only block flag. A lookup failure
-// fails open (no block) and is logged: introspect answers token validity,
-// and the chat backend treats a missing signal as not-blocked.
-func (uc *IntrospectUsecase) chatBlocked(ctx context.Context, userID uint) bool {
+// lookupUser reads the directory row backing both the suspended gate and
+// the ticket-8 chat-only block flag. A nil userRepo (or lookup failure)
+// fails open (Active without signals) and is logged: introspect answers
+// token validity, and the chat backend treats a missing signal as
+// not-blocked (availability-first tradeoff, see F9 doc note in openapi).
+func (uc *IntrospectUsecase) lookupUser(ctx context.Context, userID uint) (*entity.User, error) {
 	if uc.userRepo == nil {
-		return false
+		return nil, nil
 	}
 	user, err := uc.userRepo.FindByID(ctx, userID)
 	if err != nil {
-		log.Printf("[IntrospectUsecase.Introspect] chat_blocked lookup failed for user %d: %v", userID, err)
-		return false
+		return nil, err
 	}
-	return user.ChatBlocked
+	return user, nil
 }

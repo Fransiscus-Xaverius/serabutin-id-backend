@@ -140,6 +140,8 @@ func main() {
 	cancelRepo := gormrepo.NewCancellationRepository(db)
 	auditRepo := gormrepo.NewAuditLogRepository(db)
 	adminUserUsecase := usecase.NewAdminUserUsecase(userRepo)
+	// F1: Suspend revokes every live token via the Redis token store.
+	adminUserUsecase.SetTokenRepository(tokenRepo)
 	adminServiceUsecase := usecase.NewAdminServiceUsecase(serviceRepo)
 	adminBookingUsecase := usecase.NewAdminBookingUsecase(bookingRepo, cancelRepo)
 	adminBookingUsecase.SetNotifier(notificationUsecase)
@@ -195,6 +197,9 @@ func main() {
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
+	// F1: Authenticate rejects suspended accounts; the directory lookup is
+	// attached here so the gate sees live status.
+	authMiddleware.SetUserRepository(userRepo)
 	rateLimiter := middleware.NewRateLimiter(redisClient, 100, time.Minute)
 
 	imageProcessor := imaging.NewProcessor()
@@ -247,6 +252,13 @@ func main() {
 	api.Post("/auth/refresh", authHandler.RefreshToken)
 	api.Post("/auth/logout", authHandler.Logout)
 	api.Post("/auth/introspect", introspectHandler.Introspect)
+	// F3: service-to-service chat-access signal for the chat backend's
+	// live-session enforcement. Shares the CHAT_SERVICE_TOKEN secret (the
+	// same value the chat backend's own admin endpoint expects); user JWTs
+	// are never accepted here.
+	internalGroup := api.Group("/internal")
+	internalGroup.Use(middleware.RequireServiceToken(cfg.ChatServiceToken))
+	internalGroup.Get("/chat-access/:id", handler.NewInternalHandler(userRepo).ChatAccess)
 	api.Get("/users/:id", userHandler.GetPublicProfile)
 	api.Get("/users/:id/stats", userHandler.GetStats)
 	api.Get("/users/:id/reviews", reviewHandler.GetReceivedReviews)

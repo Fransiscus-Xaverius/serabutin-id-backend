@@ -214,6 +214,16 @@ func (r *ServiceRepository) ListForAdmin(ctx context.Context, filter repository.
 	var models []model.ServiceModel
 	var total int64
 
+	// F6: clamp like the user directory (page<1→1, limit outside 1..50→20)
+	// so negative pages can never produce a negative OFFSET.
+	page, limit := filter.Page, filter.Limit
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+
 	query := r.db.WithContext(ctx).Model(&model.ServiceModel{})
 
 	if filter.Query != "" {
@@ -231,7 +241,7 @@ func (r *ServiceRepository) ListForAdmin(ctx context.Context, filter repository.
 		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
 	}
 
-	offset := (filter.Page - 1) * filter.Limit
+	offset := (page - 1) * limit
 	err := query.
 		Preload("Images", func(db *gorm.DB) *gorm.DB {
 			return db.Order("sort_order ASC")
@@ -240,7 +250,7 @@ func (r *ServiceRepository) ListForAdmin(ctx context.Context, filter repository.
 		Order("services.created_at DESC").
 		Order("services.id DESC").
 		Offset(offset).
-		Limit(filter.Limit).
+		Limit(limit).
 		Find(&models).Error
 	if err != nil {
 		return nil, 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())

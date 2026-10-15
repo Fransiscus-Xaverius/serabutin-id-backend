@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"time"
@@ -145,8 +146,11 @@ func (uc *AdminFinanceUsecase) GetOverview(ctx context.Context, window repositor
 }
 
 // MarkPayoutPaid records the manual paid mark for one provider period.
-// Unknown/empty periods are rejected with VALIDATION_ERROR (400). No money
-// moves — the mark is the whole effect.
+// Unknown/empty periods are rejected with VALIDATION_ERROR (400). F12: a
+// provider with no computed earnings in the period is rejected with
+// VALIDATION_ERROR (400) instead of recording a phantom mark against an
+// empty period. No money moves — the mark is the whole effect, and the
+// response echoes the recorded mark visibly (provider_id/period/status).
 func (uc *AdminFinanceUsecase) MarkPayoutPaid(ctx context.Context, adminID uint, providerID uint, period string) (*entity.PayoutMark, error) {
 	if providerID == 0 {
 		return nil, apperror.NewDomainError(apperror.ErrValidation, "VALIDATION_ERROR", "provider_id is required")
@@ -154,6 +158,21 @@ func (uc *AdminFinanceUsecase) MarkPayoutPaid(ctx context.Context, adminID uint,
 	period = strings.TrimSpace(period)
 	if _, err := time.Parse("2006-01", period); err != nil {
 		return nil, apperror.NewDomainError(apperror.ErrValidation, "VALIDATION_ERROR", "period must be YYYY-MM")
+	}
+	rows, err := uc.financeRepo.Payouts(ctx, period)
+	if err != nil {
+		log.Printf("[AdminFinanceUsecase.MarkPayoutPaid] payouts lookup error: %v", err)
+		return nil, err
+	}
+	found := false
+	for _, row := range rows {
+		if row.ProviderID == providerID && row.Gross > 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, apperror.NewDomainError(apperror.ErrValidation, "VALIDATION_ERROR", "provider has no earnings in period")
 	}
 	now := time.Now().UTC()
 	mark := &entity.PayoutMark{ProviderID: providerID, Period: period, MarkedBy: adminID, MarkedAt: now}
@@ -167,6 +186,9 @@ func (uc *AdminFinanceUsecase) MarkPayoutPaid(ctx context.Context, adminID uint,
 // FileReimbursement files a provider claim linked to their booking. Only
 // the booking's provider may file (anyone else gets FORBIDDEN → 403).
 // Amount must be positive and reason non-empty (VALIDATION_ERROR → 400).
+// F11: a second filing is rejected (DUPLICATE_CLAIM → 409) while a pending
+// claim exists for the same booking — the provider must wait for the
+// approve/reject decision first.
 func (uc *AdminFinanceUsecase) FileReimbursement(ctx context.Context, filerID uint, bookingID uint, amount int64, reason string, evidenceURL string) (*entity.Reimbursement, error) {
 	if bookingID == 0 {
 		return nil, apperror.NewDomainError(apperror.ErrValidation, "VALIDATION_ERROR", "booking_id is required")
@@ -184,6 +206,15 @@ func (uc *AdminFinanceUsecase) FileReimbursement(ctx context.Context, filerID ui
 	}
 	if booking.ProviderID != filerID {
 		return nil, apperror.NewDomainError(apperror.ErrForbidden, "FORBIDDEN", "only the booking provider can file a reimbursement")
+	}
+	if pending, err := uc.reimbRepo.FindPendingByBooking(ctx, bookingID); err != nil {
+		var domainErr *apperror.DomainError
+		if !(errors.As(err, &domainErr) && domainErr.Code == "REIMBURSEMENT_NOT_FOUND") {
+			log.Printf("[AdminFinanceUsecase.FileReimbursement] pending lookup error: %v", err)
+			return nil, err
+		}
+	} else if pending != nil {
+		return nil, apperror.NewDomainError(apperror.ErrAlreadyExists, "DUPLICATE_CLAIM", "a pending reimbursement already exists for this booking")
 	}
 	claim := &entity.Reimbursement{
 		BookingID:   bookingID,

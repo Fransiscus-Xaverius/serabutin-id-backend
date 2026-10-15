@@ -46,6 +46,9 @@ func (f *promoFakeUserRepo) UpdateRole(ctx context.Context, id uint, role string
 func (f *promoFakeUserRepo) UpdateChatBlocked(ctx context.Context, id uint, blocked bool) error {
 	return nil
 }
+func (f *promoFakeUserRepo) CountActiveAdmins(ctx context.Context) (int64, error) {
+	return 2, nil
+}
 
 func TestPromoteAdmins_PromotesExistingSkipsMissing(t *testing.T) {
 	repo := &promoFakeUserRepo{users: map[string]*entity.User{

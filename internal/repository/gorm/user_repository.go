@@ -242,6 +242,18 @@ func (r *UserRepository) UpdateChatBlocked(ctx context.Context, id uint, blocked
 
 var _ repository.UserRepository = (*UserRepository)(nil)
 
+// CountActiveAdmins counts users with role=admin and status=active. It backs
+// the last-admin guard on suspend/demote (F8).
+func (r *UserRepository) CountActiveAdmins(ctx context.Context) (int64, error) {
+	var total int64
+	if err := r.db.WithContext(ctx).Model(&model.UserModel{}).
+		Where("role = ? AND status = ?", "admin", entity.UserStatusActive).
+		Count(&total).Error; err != nil {
+		return 0, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+	return total, nil
+}
+
 func (r *UserRepository) toEntity(m *model.UserModel) *entity.User {
 	return &entity.User{
 		ID:           m.ID,

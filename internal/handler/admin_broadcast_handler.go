@@ -24,8 +24,10 @@ func (h *AdminHandler) SetAdminBroadcastUC(uc *usecase.AdminBroadcastUsecase) {
 
 // CreateBroadcast composes an instant or scheduled blast. Mandatory
 // title/body/audience (400); a past scheduled_at is 422. Instant blasts
-// send synchronously in-request. The admin audit middleware persists the
-// action automatically. Admin-only.
+// send synchronously in-request; a failed instant fan-out is requeued for
+// the scheduled poller (never stranded as `sending`). Compose is not
+// idempotent — each POST creates a new blast. The admin audit middleware
+// persists the action automatically. Admin-only.
 func (h *AdminHandler) CreateBroadcast(c fiber.Ctx) error {
 	var payload dto.AdminBroadcastCreateRequest
 	if err := c.Bind().JSON(&payload); err != nil {
@@ -101,7 +103,9 @@ func (h *AdminHandler) EstimateBroadcastRecipients(c fiber.Ctx) error {
 }
 
 // CancelBroadcast moves a scheduled broadcast to cancelled (422 otherwise).
-// The audit middleware persists the action automatically. Admin-only.
+// An optional `reason` in the JSON body is persisted to the audit row when
+// present. The audit middleware persists the action automatically.
+// Admin-only.
 func (h *AdminHandler) CancelBroadcast(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
 	if err != nil {

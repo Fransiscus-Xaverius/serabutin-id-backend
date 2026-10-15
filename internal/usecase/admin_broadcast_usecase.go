@@ -91,7 +91,10 @@ func validateBroadcastInput(title, body, audience string) (string, string, error
 // CreateBroadcast composes a blast. Without scheduledAt it sends
 // synchronously in-request (status sending -> sent); with a future
 // scheduledAt it stores a scheduled row for the due-poller. A past
-// scheduledAt is rejected with 422.
+// scheduledAt is rejected with 422. A failed instant delivery requeues the
+// row to scheduled (due immediately) for the poller instead of stranding it
+// as sending; stuck sending rows older than 10m are additionally reclaimed
+// by ClaimDue. Compose is not idempotent: every call creates a new blast.
 func (uc *AdminBroadcastUsecase) CreateBroadcast(ctx context.Context, adminID uint, title, body, audience string, scheduledAt *time.Time) (*entity.Broadcast, error) {
 	title, body, err := validateBroadcastInput(title, body, audience)
 	if err != nil {
@@ -125,9 +128,18 @@ func (uc *AdminBroadcastUsecase) CreateBroadcast(ctx context.Context, adminID ui
 		log.Printf("[AdminBroadcastUsecase.CreateBroadcast] create instant error: %v", err)
 		return nil, err
 	}
+	// F5: a failed instant fan-out must not strand the row as `sending`
+	// with no retry: requeue to scheduled (due immediately) so the
+	// 60s poller redelivers, then surface the error to the caller.
+	// Duplicate POSTs are NOT deduplicated — each compose creates a new
+	// blast, so clients must guard double-submit (disable the confirm
+	// button while busy, as the admin UI does).
 	sent, err := uc.deliver(ctx, b)
 	if err != nil {
 		log.Printf("[AdminBroadcastUsecase.CreateBroadcast] deliver error: %v", err)
+		if rerr := uc.broadcasts.Requeue(ctx, b.ID); rerr != nil {
+			log.Printf("[AdminBroadcastUsecase.CreateBroadcast] requeue broadcast %d error: %v", b.ID, rerr)
+		}
 		return nil, err
 	}
 	return sent, nil
