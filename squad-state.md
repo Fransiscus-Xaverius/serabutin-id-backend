@@ -11,8 +11,8 @@ Target repos: `serabutin-id-backend` (tickets 1–2, 4–13 backend slices), `se
 - [x] 6 — Reviews/reports queue, status: done, attempts: 0, last: ok
 - [x] 7 — Dashboard stats, status: done, attempts: 0, last: ok
 - [x] 8 — Chat safety, status: done, attempts: 1, last: ok
-- [ ] 9 — Broadcasts, status: in-progress (built, awaiting QA), attempts: 0, last: —
-- [ ] 10 — CMS + categories, status: pending, attempts: 0, last: —
+- [x] 9 — Broadcasts, status: done, attempts: 0, last: ok
+- [ ] 10 — CMS + categories, status: in-progress (built, awaiting QA), attempts: 0, last: —
 - [ ] 11 — Finance overview + reimbursements, status: pending, attempts: 0, last: —
 - [ ] 12 — Kill switch, status: pending, attempts: 0, last: —
 - [ ] 13 — admin.serabutin.id routing, status: pending, attempts: 0, last: —

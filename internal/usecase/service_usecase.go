@@ -28,6 +28,10 @@ type ServiceUsecase struct {
 	serviceRepo repository.ServiceRepository
 	userRepo    repository.UserRepository
 	reviewRepo  repository.ReviewRepository
+	// categoryRepo is attached via SetCategoryRepository (ticket 10). When
+	// set, service categories validate against the active taxonomy table
+	// (422 UNKNOWN_CATEGORY); when nil, the legacy allowlist applies.
+	categoryRepo repository.CategoryRepository
 }
 
 func NewServiceUsecase(serviceRepo repository.ServiceRepository, userRepo repository.UserRepository, reviewRepo repository.ReviewRepository) *ServiceUsecase {
@@ -38,9 +42,39 @@ func NewServiceUsecase(serviceRepo repository.ServiceRepository, userRepo reposi
 	}
 }
 
+// SetCategoryRepository attaches the taxonomy store so service create/update
+// validates `category` against active category rows. Kept as a setter
+// (mirroring the notifier pattern) so the established constructor shape —
+// relied on by existing usecase tests — stays stable.
+func (uc *ServiceUsecase) SetCategoryRepository(r repository.CategoryRepository) {
+	uc.categoryRepo = r
+}
+
+// validateCategory enforces the taxonomy: with a repository attached the
+// slug must name an active category row (422 UNKNOWN_CATEGORY, after the
+// startup backfill seeds live values); without one the legacy allowlist
+// applies (existing unit tests exercise this path).
+func (uc *ServiceUsecase) validateCategory(ctx context.Context, slug string) error {
+	if uc.categoryRepo != nil {
+		ok, err := uc.categoryRepo.ExistsActive(ctx, slug)
+		if err != nil {
+			log.Printf("[ServiceUsecase.validateCategory] taxonomy lookup error: %v", err)
+			return err
+		}
+		if !ok {
+			return apperror.NewDomainError(apperror.ErrValidation, "UNKNOWN_CATEGORY", "unknown service category")
+		}
+		return nil
+	}
+	if !validCategories[slug] {
+		return apperror.NewDomainError(apperror.ErrValidation, "INVALID_CATEGORY", "invalid service category")
+	}
+	return nil
+}
+
 func (uc *ServiceUsecase) CreateService(ctx context.Context, providerID uint, req dto.CreateServiceRequest) (*entity.Service, error) {
-	if !validCategories[req.Category] {
-		return nil, apperror.NewDomainError(apperror.ErrValidation, "INVALID_CATEGORY", "invalid service category")
+	if err := uc.validateCategory(ctx, req.Category); err != nil {
+		return nil, err
 	}
 
 	status := req.Status
@@ -110,8 +144,8 @@ func (uc *ServiceUsecase) UpdateService(ctx context.Context, providerID uint, id
 		service.Title = req.Title
 	}
 	if req.Category != "" {
-		if !validCategories[req.Category] {
-			return nil, apperror.NewDomainError(apperror.ErrValidation, "INVALID_CATEGORY", "invalid service category")
+		if err := uc.validateCategory(ctx, req.Category); err != nil {
+			return nil, err
 		}
 		service.Category = req.Category
 	}

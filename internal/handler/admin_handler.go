@@ -33,6 +33,8 @@ type AdminHandler struct {
 	imageResolver  repository.StorageRepository
 	// adminBroadcastUC is attached via SetAdminBroadcastUC (ticket 9).
 	adminBroadcastUC *usecase.AdminBroadcastUsecase
+	// adminCMSUC is attached via SetAdminCMSUC (ticket 10).
+	adminCMSUC *usecase.AdminCMSUsecase
 }
 
 func NewAdminHandler(

@@ -91,7 +91,7 @@ func main() {
 	// before the column (AutoMigrate below only adds it on fresh tables).
 	db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_blocked boolean NOT NULL DEFAULT false`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_chat_blocked ON users (chat_blocked)`)
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
@@ -153,6 +153,21 @@ func main() {
 	broadcastRepo := gormrepo.NewBroadcastRepository(db)
 	adminBroadcastUC := usecase.NewAdminBroadcastUsecase(broadcastRepo, notificationRepo)
 	adminHandler.SetAdminBroadcastUC(adminBroadcastUC)
+	// Ticket 10: CMS taxonomy + banners. The taxonomy check is attached to
+	// the provider service flow so create/update validates against active
+	// category rows; the startup seed below backfills live values first so
+	// enforcement never breaks existing listings.
+	bannerRepo := gormrepo.NewBannerRepository(db)
+	categoryRepo := gormrepo.NewCategoryRepository(db)
+	adminCMSUC := usecase.NewAdminCMSUsecase(bannerRepo, categoryRepo)
+	adminHandler.SetAdminCMSUC(adminCMSUC)
+	cmsHandler := handler.NewCmsHandler(adminCMSUC)
+	serviceUsecase.SetCategoryRepository(categoryRepo)
+	if seeded, err := adminCMSUC.EnsureSeedCategories(context.Background()); err != nil {
+		logger.Log.Error().Err(err).Msg("failed to seed service taxonomy")
+	} else if seeded > 0 {
+		logger.Log.Info().Int64("categories", seeded).Msg("seeded service taxonomy")
+	}
 	usecase.PromoteAdmins(context.Background(), userRepo, cfg.AdminEmails)
 
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret, tokenRepo)
@@ -214,6 +229,8 @@ func main() {
 
 	api.Get("/services", serviceHandler.List)
 	api.Get("/services/:id", serviceHandler.Get)
+	api.Get("/banners", cmsHandler.ListBanners)
+	api.Get("/categories", cmsHandler.ListCategories)
 	api.Get("/services/:id/reviews", reviewHandler.GetServiceReviews)
 	api.Get("/providers/:id/reviews", reviewHandler.GetProviderReviews)
 	api.Get("/providers/:id/availability", bookingHandler.GetAvailableSlots)
@@ -279,6 +296,14 @@ func main() {
 	admin.Get("/broadcasts/estimate", adminHandler.EstimateBroadcastRecipients)
 	admin.Post("/broadcasts", adminHandler.CreateBroadcast)
 	admin.Post("/broadcasts/:id/cancel", adminHandler.CancelBroadcast)
+	admin.Get("/banners", adminHandler.ListBanners)
+	admin.Post("/banners", adminHandler.CreateBanner)
+	admin.Patch("/banners/:id", adminHandler.UpdateBanner)
+	admin.Delete("/banners/:id", adminHandler.DeleteBanner)
+	admin.Get("/categories", adminHandler.ListCategories)
+	admin.Post("/categories", adminHandler.CreateCategory)
+	admin.Patch("/categories/:id", adminHandler.UpdateCategory)
+	admin.Delete("/categories/:id", adminHandler.DeleteCategory)
 
 	logger.Log.Info().Int("port", cfg.Port).Msg("server starting")
 

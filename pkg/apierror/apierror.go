@@ -37,6 +37,12 @@ func FromDomainError(err error) *APIError {
 		if domainErr.Code == "INVALID_STATUS_TRANSITION" {
 			return NewAPIError(fiber.StatusUnprocessableEntity, domainErr.Code, domainErr.Message)
 		}
+		// The service taxonomy rejects unknown categories with this code; it
+		// maps to 422 (like the admin moderation state machine) so clients
+		// can distinguish "unknown category" from generic 400s.
+		if domainErr.Code == "UNKNOWN_CATEGORY" {
+			return NewAPIError(fiber.StatusUnprocessableEntity, domainErr.Code, domainErr.Message)
+		}
 		// The admin chat-safety proxy reports a down/unconfigured chat
 		// backend with this code; it maps to 502 while keeping the code so
 		// operators can distinguish it from local 500s.
@@ -77,6 +83,8 @@ func FromDomainError(err error) *APIError {
 		case errors.Is(domainErr.Unwrap(), apperror.ErrInvalidTransition):
 			return NewAPIError(fiber.StatusBadRequest, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrReviewAlreadyExists):
+			return NewAPIError(fiber.StatusConflict, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrAlreadyExists):
 			return NewAPIError(fiber.StatusConflict, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrBookingNotCompleted):
 			return NewAPIError(fiber.StatusBadRequest, domainErr.Code, domainErr.Message)

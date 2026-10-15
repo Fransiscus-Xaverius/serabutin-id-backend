@@ -4,7 +4,10 @@ import "errors"
 
 type CreateServiceRequest struct {
 	Title           string                `json:"title" validate:"required,min=3,max=100"`
-	Category        string                `json:"category" validate:"required,oneof=cleaning handyman massage gardening ac_service moving laundry shopping errands other"`
+	// Category validates against the taxonomy table in the usecase (422
+	// UNKNOWN_CATEGORY); the shape tag only bounds length so admin-created
+	// slugs pass binding. Ticket 10.
+	Category        string                `json:"category" validate:"required,max=50"`
 	Description     string                `json:"description" validate:"required,min=10,max=2000"`
 	UnitType        string                `json:"unit_type" validate:"required,oneof=per_session per_hour"`
 	BasePrice       int64                 `json:"base_price" validate:"required,min=10000"`
@@ -21,7 +24,7 @@ type CreateServiceRequest struct {
 
 type UpdateServiceRequest struct {
 	Title           string                `json:"title,omitempty" validate:"omitempty,min=3,max=100"`
-	Category        string                `json:"category,omitempty" validate:"omitempty,oneof=cleaning handyman massage gardening ac_service moving laundry shopping errands other"`
+	Category        string                `json:"category,omitempty" validate:"omitempty,max=50"`
 	Description     string                `json:"description,omitempty" validate:"omitempty,min=10,max=2000"`
 	UnitType        string                `json:"unit_type,omitempty" validate:"omitempty,oneof=per_session per_hour"`
 	BasePrice       int64                 `json:"base_price,omitempty" validate:"omitempty,min=10000"`

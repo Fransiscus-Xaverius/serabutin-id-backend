@@ -23,6 +23,7 @@ var (
 	ErrBookingNotCompleted   = errors.New("booking must be completed to leave a review")
 	ErrNotBookingOwner       = errors.New("user is not the booking owner")
 	ErrAccountSuspended      = errors.New("account is suspended")
+	ErrAlreadyExists         = errors.New("resource already exists")
 )
 
 type DomainError struct {
