@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/helmet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -52,6 +53,57 @@ func TestRegisterLocalUploads(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, resp.Body.Close())
 	}
+}
+
+// F2: storefront pages embed uploaded media cross-origin (the stored URLs
+// are absolute, e.g. http://localhost:3000/uploads/...). Chrome enforces
+// Cross-Origin-Resource-Policy for such no-cors <img> requests, so every
+// response under the uploads prefix — including the 404 for an object that
+// is gone — must answer `cross-origin`; otherwise the image fails with
+// ERR_BLOCKED_BY_RESPONSE.NotSameOrigin instead of degrading to a broken
+// image.
+func TestRegisterLocalUploads_MissingObjectAllowsCrossOriginEmbedding(t *testing.T) {
+	parent, delegated := staticTestDir(t)
+	if delegated {
+		return
+	}
+	root := filepath.Join(parent, "uploads")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "images"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "images", "photo.jpg"), []byte("image-bytes"), 0644))
+
+	app := fiber.New()
+	t.Cleanup(func() { _ = app.Shutdown() })
+	// Mirror the production middleware stack: helmet answers with its own
+	// CORP: same-origin default unless the uploads handler overrides it.
+	app.Use(helmet.New())
+	registerLocalUploads(app, &config.Config{StorageDriver: "local", StorageLocalPath: root, StorageLocalURL: "http://media.example.test/uploads"})
+
+	for _, path := range []string{"/uploads/gone/original.jpg", "/uploads/gone/medium.jpg", "/uploads/%2e%2e/secret.txt"} {
+		resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, path, nil))
+		require.NoError(t, err)
+		assert.Equal(t, fiber.StatusNotFound, resp.StatusCode, path)
+		assert.Equal(t, "cross-origin", resp.Header.Get("Cross-Origin-Resource-Policy"), path)
+		_, err = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+	}
+
+	// Directory paths are answered by the router's default 404 — no media is
+	// ever served from them — so only the status is asserted here.
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/uploads/images/", nil))
+	require.NoError(t, err)
+	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	resp, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/uploads/images/photo.jpg", nil))
+	require.NoError(t, err)
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+	assert.Equal(t, "cross-origin", resp.Header.Get("Cross-Origin-Resource-Policy"))
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
 }
 
 func TestLocalStorageUpload_IsServedAtReturnedURL(t *testing.T) {

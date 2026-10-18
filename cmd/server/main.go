@@ -397,13 +397,20 @@ func registerLocalUploads(app *fiber.App, cfg *config.Config) {
 		return
 	}
 
+	// F2: media URLs are stored absolute, so the storefront embeds them from
+	// a different origin (in dev, localhost:3000 directly). Set the embed
+	// policy on the prefix itself, before the static handler, so it also
+	// covers the 404s/error responses that the handler's ModifyResponse never
+	// sees — otherwise Chrome blocks those images with
+	// ERR_BLOCKED_BY_RESPONSE.NotSameOrigin instead of showing a broken image.
+	app.Use(publicURL.Path, func(c fiber.Ctx) error {
+		c.Set("Cross-Origin-Resource-Policy", "cross-origin")
+		return c.Next()
+	})
+
 	app.Use(publicURL.Path, staticmiddleware.New(cfg.StorageLocalPath, staticmiddleware.Config{
 		Browse:        false,
 		CacheDuration: -1,
-		ModifyResponse: func(c fiber.Ctx) error {
-			c.Set("Cross-Origin-Resource-Policy", "cross-origin")
-			return nil
-		},
 		NotFoundHandler: func(c fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusNotFound)
 		},
