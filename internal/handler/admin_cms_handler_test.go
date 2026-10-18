@@ -236,6 +236,32 @@ func TestAdminCMS_CreateBannerReturns201(t *testing.T) {
 	assert.Equal(t, true, data["active"])
 }
 
+// F1: `active` is a *bool in the create DTO, so an explicit false must reach
+// the usecase unchanged while an omitted field still defaults to published.
+func TestAdminCMS_CreateBannerExplicitInactiveStaysInactive(t *testing.T) {
+	t.Parallel()
+	app := newAdminCMSTestApp(newStubCMSBannerRepo(), newStubCMSCategoryRepo())
+	status, body := doCMSRequest(t, app, "POST", "/api/v1/admin/banners",
+		`{"title":"Draf","image_url":"https://img/x.jpg","active":false,"reason":"belum siap tayang"}`)
+	assert.Equal(t, fiber.StatusCreated, status)
+	assert.Equal(t, false, body["data"].(map[string]interface{})["active"])
+}
+
+func TestAdminCMS_CreateCategoryInactiveAndDefault(t *testing.T) {
+	t.Parallel()
+	app := newAdminCMSTestApp(newStubCMSBannerRepo(), newStubCMSCategoryRepo())
+
+	status, body := doCMSRequest(t, app, "POST", "/api/v1/admin/categories",
+		`{"slug":"draf-kategori","name":"Draf Kategori","active":false,"reason":"menunggu review"}`)
+	assert.Equal(t, fiber.StatusCreated, status)
+	assert.Equal(t, false, body["data"].(map[string]interface{})["active"])
+
+	status, body = doCMSRequest(t, app, "POST", "/api/v1/admin/categories",
+		`{"slug":"kategori-umum","name":"Kategori Umum","reason":"taksonomi baru"}`)
+	assert.Equal(t, fiber.StatusCreated, status)
+	assert.Equal(t, true, body["data"].(map[string]interface{})["active"])
+}
+
 func TestAdminCMS_UpdateBannerToggleRequiresReason(t *testing.T) {
 	t.Parallel()
 	banners := newStubCMSBannerRepo()
