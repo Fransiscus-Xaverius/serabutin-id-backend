@@ -18,9 +18,24 @@ type BookingUsecase struct {
 	userRepo          repository.UserRepository
 	cancelRepo        repository.CancellationRepository
 	notifier          Notifier
+	paymentInitiator  PaymentInitiator
+	refundMarker      PaymentRefundMarker
 	platformFee       int64
 	cancelFeeCustomer int64
 	cancelFeeProvider int64
+}
+
+// PaymentInitiator creates the provider checkout for a newly created
+// booking. Implemented by PaymentUsecase; nil means the deployment has no
+// payment gateway wired and prepaid bookings cannot be started.
+type PaymentInitiator interface {
+	CreateCheckout(ctx context.Context, booking *entity.Booking) (*entity.Payment, error)
+}
+
+// PaymentRefundMarker records the manual refund obligation for a paid
+// booking that was rejected or cancelled before the work was delivered.
+type PaymentRefundMarker interface {
+	MarkRefundPendingForBooking(ctx context.Context, bookingID uint) error
 }
 
 func NewBookingUsecase(
@@ -45,6 +60,48 @@ func NewBookingUsecase(
 
 func (uc *BookingUsecase) SetNotifier(n Notifier) {
 	uc.notifier = n
+}
+
+// SetPaymentInitiator wires the provider checkout used by prepaid bookings.
+func (uc *BookingUsecase) SetPaymentInitiator(p PaymentInitiator) {
+	uc.paymentInitiator = p
+}
+
+// SetPaymentRefundMarker wires the refund-obligation recorder.
+func (uc *BookingUsecase) SetPaymentRefundMarker(m PaymentRefundMarker) {
+	uc.refundMarker = m
+}
+
+// notifyCustomer writes one notification row for the customer only.
+// Best-effort: failures are logged and never fail the booking transition.
+func (uc *BookingUsecase) notifyCustomer(ctx context.Context, booking *entity.Booking, typ, title, body string) {
+	if uc.notifier == nil {
+		return
+	}
+	data := fmt.Sprintf(`{"booking_id":%d,"status":%q}`, booking.ID, booking.Status)
+	if _, err := uc.notifier.Notify(ctx, booking.CustomerID, typ, title, body, data); err != nil {
+		log.Printf("[BookingUsecase.notify] customer %d: %v", booking.CustomerID, err)
+	}
+}
+
+// markRefundPending records that a paid booking lost its provider and that
+// the customer is owed money back. No money moves here: the refund itself is
+// handled manually by an operator.
+func (uc *BookingUsecase) markRefundPending(ctx context.Context, booking *entity.Booking) {
+	if uc.refundMarker == nil || booking == nil {
+		return
+	}
+	if booking.Payment == nil || booking.Payment.Status != entity.PaymentStatusPaid {
+		return
+	}
+	if err := uc.refundMarker.MarkRefundPendingForBooking(ctx, booking.ID); err != nil {
+		log.Printf("[BookingUsecase.markRefundPending] booking %d: %v", booking.ID, err)
+		return
+	}
+	booking.Payment.Status = entity.PaymentStatusRefundPending
+	uc.notifyCustomer(ctx, booking, "payment.refund_pending",
+		"Pembatalan diproses",
+		"Pembayaran Anda diproses pengembaliannya. Dana dikembalikan sesuai kebijakan pembatalan, dikurangi biaya penyedia pembayaran bila berlaku.")
 }
 
 // notifyBoth writes one notification row per participant. Best-effort:
@@ -112,6 +169,13 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 
 	total := subTotal + uc.platformFee
 
+	// Prepaid bookings are created as pending_payment: the Mitra only sees
+	// the booking once the payment webhook confirms the money arrived.
+	status := entity.BookingStatusPending
+	if req.PaymentMethod == entity.PaymentChannelQRIS {
+		status = entity.BookingStatusPendingPayment
+	}
+
 	booking := &entity.Booking{
 		CustomerID:    customerID,
 		ServiceID:     service.ID,
@@ -124,13 +188,33 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 		PlatformFee:   uc.platformFee,
 		Total:         total,
 		PaymentMethod: req.PaymentMethod,
-		Status:        "pending",
+		Status:        status,
 		BookingAddOns: bookingAddOns,
 	}
 
 	if err := uc.bookingRepo.Create(ctx, booking); err != nil {
 		log.Printf("[BookingUsecase.CreateBooking] create error: %v", err)
 		return nil, err
+	}
+
+	if req.PaymentMethod == entity.PaymentChannelQRIS {
+		if uc.paymentInitiator == nil {
+			log.Printf("[BookingUsecase.CreateBooking] booking %d has no payment initiator configured", booking.ID)
+		} else {
+			// A provider failure is not fatal here: the payment row records
+			// the failure and the customer sees the real state on the
+			// booking instead of a false success.
+			payment, err := uc.paymentInitiator.CreateCheckout(ctx, booking)
+			if payment != nil {
+				booking.Payment = payment
+			}
+			if err != nil {
+				log.Printf("[BookingUsecase.CreateBooking] start checkout for booking %d: %v", booking.ID, err)
+			}
+		}
+		uc.notifyCustomer(ctx, booking, "booking.created", "Pesanan dibuat",
+			"Pesanan dibuat. Selesaikan pembayaran QRIS agar pesanan diteruskan ke Mitra.")
+		return booking, nil
 	}
 
 	uc.notifyBoth(ctx, booking, "booking.created", "Pesanan baru", "Pesanan baru dibuat dan menunggu konfirmasi mitra.")
@@ -171,8 +255,17 @@ func (uc *BookingUsecase) AcceptBooking(ctx context.Context, providerID uint, id
 		return nil, apperror.NewDomainError(apperror.ErrForbidden, "FORBIDDEN", "only the provider can accept this booking")
 	}
 
-	if booking.Status != "pending" {
+	if booking.Status != entity.BookingStatusPending {
+		// A prepaid booking waits for the payment webhook before the Mitra
+		// can act on it. The provider must never accept unpaid work.
+		if booking.Status == entity.BookingStatusPendingPayment {
+			return nil, apperror.NewDomainError(apperror.ErrPaymentRequired, "PAYMENT_REQUIRED", "pembayaran belum diterima")
+		}
 		return nil, apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_TRANSITION", "can only accept pending bookings")
+	}
+
+	if booking.Payment != nil && booking.Payment.Status != entity.PaymentStatusPaid {
+		return nil, apperror.NewDomainError(apperror.ErrPaymentRequired, "PAYMENT_REQUIRED", "pembayaran belum diterima")
 	}
 
 	// Bookings created from an accepted bid carry no schedule/address (the
@@ -233,6 +326,8 @@ func (uc *BookingUsecase) RejectBooking(ctx context.Context, providerID uint, id
 
 	booking.Status = "rejected"
 	uc.notifyBoth(ctx, booking, "booking.rejected", "Pesanan ditolak", "Mitra menolak pesanan Anda.")
+	// A paid booking that gets rejected owes the customer money back.
+	uc.markRefundPending(ctx, booking)
 	return booking, nil
 }
 
@@ -297,7 +392,9 @@ func (uc *BookingUsecase) CancelBooking(ctx context.Context, userID uint, id uin
 		return nil, nil, apperror.NewDomainError(apperror.ErrNotBookingParticipant, "NOT_PARTICIPANT", "you are not a participant of this booking")
 	}
 
-	if booking.Status != "pending" && booking.Status != "accepted" && booking.Status != "confirmed" {
+	if booking.Status != entity.BookingStatusPending &&
+		booking.Status != entity.BookingStatusPendingPayment &&
+		booking.Status != "accepted" && booking.Status != "confirmed" {
 		return nil, nil, apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_TRANSITION", "can only cancel pending, accepted or confirmed bookings")
 	}
 
@@ -314,7 +411,7 @@ func (uc *BookingUsecase) CancelBooking(ctx context.Context, userID uint, id uin
 	// fee; customer cancel on confirmed (in-progress) = customer fee.
 	var fee int64
 	switch booking.Status {
-	case "pending":
+	case entity.BookingStatusPending, entity.BookingStatusPendingPayment:
 		fee = 0
 	case "accepted":
 		if role == "provider" {
@@ -362,6 +459,8 @@ func (uc *BookingUsecase) CancelBooking(ctx context.Context, userID uint, id uin
 		body = fmt.Sprintf("Pesanan dibatalkan. Biaya pembatalan Rp %d dibebankan ke %s.", fee, role)
 	}
 	uc.notifyBoth(ctx, booking, "booking.cancelled", "Pesanan dibatalkan", body)
+	// A paid booking that gets cancelled owes the customer money back.
+	uc.markRefundPending(ctx, booking)
 	return booking, cancellation, nil
 }
 

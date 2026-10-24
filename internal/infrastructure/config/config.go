@@ -50,6 +50,17 @@ type Config struct {
 	StorageS3SecretKey string
 	StorageS3UseSSL    bool
 	StorageS3URLPrefix string
+
+	// DOKU Checkout (non-SNAP) prepayment. DOKU_MODE is one of
+	// disabled|mock|sandbox|production. Secrets are env-only.
+	DOKUMode             string
+	DOKUClientID         string
+	DOKUSecretKey        string
+	DOKUBaseURL          string
+	DOKUHubAccountID     string
+	DOKUNotificationPath string
+	PaymentExpiryMinutes int
+	AppPublicURL         string
 }
 
 const (
@@ -111,6 +122,15 @@ func Load() (*Config, error) {
 	viper.SetDefault("STORAGE_LOCAL_URL", "http://localhost:3000/uploads")
 	viper.SetDefault("STORAGE_S3_USE_SSL", true)
 
+	viper.SetDefault("DOKU_MODE", "disabled")
+	viper.SetDefault("DOKU_CLIENT_ID", "")
+	viper.SetDefault("DOKU_SECRET_KEY", "")
+	viper.SetDefault("DOKU_BASE_URL", "https://api-sandbox.doku.com")
+	viper.SetDefault("DOKU_HUB_ACCOUNT_ID", "")
+	viper.SetDefault("DOKU_NOTIFICATION_PATH", "/api/v1/payments/doku/webhook")
+	viper.SetDefault("PAYMENT_EXPIRY_MINUTES", 60)
+	viper.SetDefault("APP_PUBLIC_URL", "http://localhost:5173")
+
 	var cfg Config
 
 	err := viper.Unmarshal(&cfg)
@@ -155,9 +175,51 @@ func Load() (*Config, error) {
 	cfg.ChatBackendBaseURL = viper.GetString("CHAT_BACKEND_BASE_URL")
 	cfg.ChatServiceToken = viper.GetString("CHAT_SERVICE_TOKEN")
 
+	cfg.DOKUMode = strings.ToLower(strings.TrimSpace(viper.GetString("DOKU_MODE")))
+	if cfg.DOKUMode == "" {
+		cfg.DOKUMode = "disabled"
+	}
+	cfg.DOKUClientID = viper.GetString("DOKU_CLIENT_ID")
+	cfg.DOKUSecretKey = viper.GetString("DOKU_SECRET_KEY")
+	cfg.DOKUBaseURL = viper.GetString("DOKU_BASE_URL")
+	cfg.DOKUHubAccountID = viper.GetString("DOKU_HUB_ACCOUNT_ID")
+	cfg.DOKUNotificationPath = viper.GetString("DOKU_NOTIFICATION_PATH")
+	cfg.PaymentExpiryMinutes = viper.GetInt("PAYMENT_EXPIRY_MINUTES")
+	if cfg.PaymentExpiryMinutes <= 0 {
+		cfg.PaymentExpiryMinutes = 60
+	}
+	cfg.AppPublicURL = strings.TrimRight(viper.GetString("APP_PUBLIC_URL"), "/")
+
 	if err := ValidateSecrets(cfg.Environment, cfg.JWTSecret, cfg.JWTRefreshSecret); err != nil {
+		return nil, err
+	}
+	if err := ValidatePaymentConfig(cfg.Environment, cfg.DOKUMode, cfg.DOKUClientID, cfg.DOKUSecretKey); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+// ValidatePaymentConfig rejects unsafe combinations: production must never
+// use the mock gateway, and sandbox/production must carry real credentials.
+func ValidatePaymentConfig(environment, mode, clientID, secretKey string) error {
+	env := strings.ToLower(strings.TrimSpace(environment))
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "disabled"
+	}
+
+	switch mode {
+	case "disabled", "mock", "sandbox", "production":
+	default:
+		return fmt.Errorf("DOKU_MODE must be one of disabled, mock, sandbox, production")
+	}
+
+	if env == "production" && mode == "mock" {
+		return fmt.Errorf("DOKU_MODE=mock is not allowed in production")
+	}
+	if (mode == "sandbox" || mode == "production") && (strings.TrimSpace(clientID) == "" || strings.TrimSpace(secretKey) == "") {
+		return fmt.Errorf("DOKU_CLIENT_ID and DOKU_SECRET_KEY are required when DOKU_MODE=%s", mode)
+	}
+	return nil
 }

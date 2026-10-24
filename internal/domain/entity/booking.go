@@ -2,6 +2,12 @@ package entity
 
 import "time"
 
+const (
+	BookingStatusPending        = "pending"
+	BookingStatusPendingPayment = "pending_payment"
+	BookingStatusExpired        = "expired"
+)
+
 type Booking struct {
 	ID             uint
 	CustomerID     uint
@@ -17,6 +23,7 @@ type Booking struct {
 	PaymentMethod  string
 	Status         string
 	BookingAddOns  []BookingAddOn
+	Payment        *Payment
 	CancellationID *uint
 	CancelledBy    *uint
 	CancelledAt    *time.Time

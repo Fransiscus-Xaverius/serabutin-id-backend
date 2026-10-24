@@ -52,7 +52,7 @@ func setupAdminCancelLiveDB(t *testing.T) *gorm.DB {
 
 	db, err := gorm.Open(gormpostgres.Open(connStr), &gorm.Config{TranslateError: true})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.BookingModel{}, &model.BookingAddOnModel{}, &model.CancellationModel{}))
+	require.NoError(t, db.AutoMigrate(&model.BookingModel{}, &model.BookingAddOnModel{}, &model.PaymentModel{}, &model.CancellationModel{}))
 
 	// Simulate an existing deployment created before the widening: legacy
 	// narrow widths that AutoMigrate will NOT resize on its own.

@@ -349,5 +349,9 @@ func (h *BookingHandler) toBookingResponse(ctx context.Context, booking *entity.
 		})
 	}
 
+	if booking.Payment != nil {
+		resp.Payment = toPaymentResponse(booking.Payment)
+	}
+
 	return resp
 }

@@ -17,6 +17,7 @@ type BookingModel struct {
 	PaymentMethod  string              `gorm:"size:30;not null"`
 	Status         string              `gorm:"size:20;default:pending;index;not null"`
 	BookingAddOns  []BookingAddOnModel `gorm:"foreignKey:BookingID"`
+	Payment        *PaymentModel       `gorm:"foreignKey:BookingID"`
 	CancellationID *uint
 	CancelledBy    *uint
 	CancelledAt    *time.Time

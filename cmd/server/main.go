@@ -22,8 +22,10 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/chatclient"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/config"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/database"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/doku"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/imaging"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/logger"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/payment"
 	infraredis "github.com/serabutin/serabutin-id-backend/internal/infrastructure/redis"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/storage"
 	"github.com/serabutin/serabutin-id-backend/internal/middleware"
@@ -91,7 +93,7 @@ func main() {
 	// before the column (AutoMigrate below only adds it on fresh tables).
 	db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_blocked boolean NOT NULL DEFAULT false`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_chat_blocked ON users (chat_blocked)`)
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}, &model.ReimbursementModel{}, &model.PayoutMarkModel{}, &model.KillSwitchModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.PaymentModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}, &model.ReimbursementModel{}, &model.PayoutMarkModel{}, &model.KillSwitchModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
@@ -137,6 +139,27 @@ func main() {
 	notificationHandler := handler.NewNotificationHandler(notificationUsecase)
 	bookingUsecase.SetNotifier(notificationUsecase)
 	bidUsecase.SetNotifier(notificationUsecase)
+
+	// Prepayment: DOKU Checkout collects the money up front and serabutin
+	// holds it until the work is confirmed. The gateway is selected from
+	// DOKU_MODE: mock for local development, sandbox/production for the
+	// real provider, disabled when no gateway is configured at all.
+	paymentRepo := gormrepo.NewPaymentRepository(db)
+	paymentGateway := buildPaymentGateway(cfg)
+	paymentUsecase := usecase.NewPaymentUsecase(
+		paymentRepo,
+		bookingRepo,
+		userRepo,
+		paymentGateway,
+		cfg.DOKUMode,
+		cfg.PaymentExpiryMinutes,
+		cfg.AppPublicURL,
+	)
+	paymentUsecase.SetNotifier(notificationUsecase)
+	bookingUsecase.SetPaymentInitiator(paymentUsecase)
+	bookingUsecase.SetPaymentRefundMarker(paymentUsecase)
+	paymentHandler := handler.NewPaymentHandler(paymentUsecase, cfg.PlatformFee)
+	logger.Log.Info().Str("payment_mode", cfg.DOKUMode).Msg("payment gateway configured")
 	cancelRepo := gormrepo.NewCancellationRepository(db)
 	auditRepo := gormrepo.NewAuditLogRepository(db)
 	adminUserUsecase := usecase.NewAdminUserUsecase(userRepo)
@@ -271,6 +294,13 @@ func main() {
 	api.Get("/providers/:id/reviews", reviewHandler.GetProviderReviews)
 	api.Get("/providers/:id/availability", bookingHandler.GetAvailableSlots)
 
+	// Prepayment surface. The DOKU callback is public because DOKU calls it
+	// server to server; the notification signature is what makes it trusted.
+	api.Get("/booking-config", paymentHandler.GetConfig)
+	api.Post("/payments/doku/webhook", paymentHandler.Webhook)
+	api.Post("/payments/mock/:invoice/succeed", paymentHandler.MockSucceed)
+	api.Post("/payments/mock/:invoice/expire", paymentHandler.MockExpire)
+
 	protected := api.Group("")
 	protected.Use(authMiddleware.Authenticate())
 	protected.Use(rateLimiter.Limit())
@@ -290,6 +320,7 @@ func main() {
 	protected.Patch("/bids/:id/accept", bidHandler.Accept)
 	protected.Patch("/bids/:id/reject", bidHandler.Reject)
 	protected.Get("/bookings/:id", bookingHandler.Get)
+	protected.Get("/bookings/:id/payment", paymentHandler.GetPayment)
 	protected.Get("/my-bookings", bookingHandler.GetMyBookings)
 	protected.Patch("/bookings/:id/accept", bookingHandler.Accept)
 	protected.Patch("/bookings/:id/reject", bookingHandler.Reject)
@@ -359,6 +390,13 @@ func main() {
 	broadcastPollerCtx, stopBroadcastPoller := context.WithCancel(context.Background())
 	usecase.StartBroadcastDuePoller(broadcastPollerCtx, adminBroadcastUC, 60*time.Second)
 
+	// Prepayment expiry worker: unpaid QRIS checkouts are closed after
+	// their due date so the booking slot is released again. The worker
+	// blocks until the context is cancelled, so it runs in its own
+	// goroutine.
+	paymentPollerCtx, stopPaymentPoller := context.WithCancel(context.Background())
+	go usecase.StartPaymentExpiryWorker(paymentPollerCtx, paymentUsecase, time.Minute)
+
 	go func() {
 		if err := app.Listen(fmt.Sprintf(":%d", cfg.Port)); err != nil {
 			logger.Log.Fatal().Err(err).Msg("server failed to start")
@@ -372,6 +410,7 @@ func main() {
 	logger.Log.Info().Msg("shutting down server")
 
 	stopBroadcastPoller()
+	stopPaymentPoller()
 
 	if err := app.Shutdown(); err != nil {
 		logger.Log.Error().Err(err).Msg("error during shutdown")
@@ -385,6 +424,27 @@ func main() {
 	redisClient.Close()
 
 	logger.Log.Info().Msg("server stopped")
+}
+
+// buildPaymentGateway selects the checkout provider from DOKU_MODE. The mock
+// gateway is a local simulation and is rejected in production by
+// config.ValidatePaymentConfig; the disabled gateway records a real failure
+// instead of pretending a checkout exists.
+func buildPaymentGateway(cfg *config.Config) payment.Gateway {
+	switch cfg.DOKUMode {
+	case "mock":
+		return payment.NewMockGateway(cfg.AppPublicURL)
+	case "sandbox", "production":
+		return doku.NewClient(doku.Config{
+			ClientID:         cfg.DOKUClientID,
+			SecretKey:        cfg.DOKUSecretKey,
+			BaseURL:          cfg.DOKUBaseURL,
+			HubAccountID:     cfg.DOKUHubAccountID,
+			NotificationPath: cfg.DOKUNotificationPath,
+		})
+	default:
+		return payment.NewDisabledGateway()
+	}
 }
 
 func registerLocalUploads(app *fiber.App, cfg *config.Config) {

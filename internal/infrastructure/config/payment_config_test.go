@@ -1,0 +1,54 @@
+package config
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// The payment gateway configuration must fail closed: production may never
+// run the mock gateway, and the real gateway needs credentials.
+
+func TestValidatePaymentConfig_RejectsMockInProduction(t *testing.T) {
+	err := ValidatePaymentConfig("production", "mock", "client", "secret")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mock")
+}
+
+func TestValidatePaymentConfig_RequiresCredentialsForLiveModes(t *testing.T) {
+	err := ValidatePaymentConfig("development", "sandbox", "", "")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DOKU_CLIENT_ID")
+}
+
+func TestValidatePaymentConfig_AcceptsSupportedModes(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       string
+		mode      string
+		clientID  string
+		secretKey string
+	}{
+		{"disabled in development", "development", "disabled", "", ""},
+		{"mock in development", "development", "mock", "", ""},
+		{"sandbox with credentials", "development", "sandbox", "client", "secret"},
+		{"production with credentials", "production", "production", "client", "secret"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePaymentConfig(tc.env, tc.mode, tc.clientID, tc.secretKey)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestValidatePaymentConfig_RejectsUnknownMode(t *testing.T) {
+	err := ValidatePaymentConfig("development", "live", "client", "secret")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DOKU_MODE")
+}

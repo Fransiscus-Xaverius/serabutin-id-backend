@@ -276,6 +276,9 @@ func (h *AdminHandler) GetBooking(c fiber.Ctx) error {
 	for _, addon := range booking.BookingAddOns {
 		resp.AddOns = append(resp.AddOns, dto.BookingAddOnResponse{Name: addon.Name, Price: addon.Price})
 	}
+	if booking.Payment != nil {
+		resp.Payment = toPaymentResponse(booking.Payment)
+	}
 	return response.Success(c, fiber.StatusOK, resp)
 }
 
@@ -310,6 +313,12 @@ func (h *AdminHandler) ListBookings(c fiber.Ctx) error {
 			Status:     b.Status,
 			Total:      b.Total,
 			CreatedAt:  b.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+		if b.PaymentMethod != "" {
+			row.PaymentMethod = b.PaymentMethod
+		}
+		if b.Payment != nil {
+			row.PaymentStatus = b.Payment.Status
 		}
 		if b.ScheduleDate != nil {
 			s := b.ScheduleDate.Format("2006-01-02")

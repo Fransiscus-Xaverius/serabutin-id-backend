@@ -45,6 +45,7 @@ func (r *BookingRepository) FindByID(ctx context.Context, id uint) (*entity.Book
 
 	err := r.db.WithContext(ctx).
 		Preload("BookingAddOns").
+		Preload("Payment").
 		First(&m, id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -107,7 +108,8 @@ func (r *BookingRepository) FindByUserID(ctx context.Context, userID uint, role 
 	query := r.db.WithContext(ctx).Model(&model.BookingModel{})
 
 	if role == "provider" {
-		query = query.Where("provider_id = ?", userID)
+		query = query.Where("provider_id = ?", userID).
+			Where("status NOT IN ?", []string{entity.BookingStatusPendingPayment, entity.BookingStatusExpired})
 	} else {
 		query = query.Where("customer_id = ?", userID)
 	}
@@ -123,6 +125,7 @@ func (r *BookingRepository) FindByUserID(ctx context.Context, userID uint, role 
 	offset := (filter.Page - 1) * filter.Limit
 	err := query.
 		Preload("BookingAddOns").
+		Preload("Payment").
 		Order("created_at DESC").
 		Offset(offset).
 		Limit(filter.Limit).
@@ -184,6 +187,7 @@ func (r *BookingRepository) ListForAdmin(ctx context.Context, filter repository.
 	offset := (page - 1) * limit
 	err := query.
 		Preload("BookingAddOns").
+		Preload("Payment").
 		Order("bookings.id DESC").
 		Offset(offset).
 		Limit(limit).
@@ -204,7 +208,7 @@ func (r *BookingRepository) FindBookedSlotsByProvider(ctx context.Context, provi
 	var slots []string
 	err = r.db.WithContext(ctx).
 		Model(&model.BookingModel{}).
-		Where("provider_id = ? AND schedule_date = ? AND status NOT IN ?", providerID, parsed, []string{"rejected", "cancelled"}).
+		Where("provider_id = ? AND schedule_date = ? AND status NOT IN ?", providerID, parsed, []string{"rejected", "cancelled", entity.BookingStatusExpired}).
 		Distinct("schedule_time").
 		Pluck("schedule_time", &slots).Error
 	if err != nil {
@@ -257,6 +261,7 @@ func (r *BookingRepository) toEntity(m *model.BookingModel) *entity.Booking {
 		Total:          m.Total,
 		PaymentMethod:  m.PaymentMethod,
 		Status:         m.Status,
+		Payment:        toPaymentEntityFromBooking(m.Payment),
 		CancellationID: m.CancellationID,
 		CancelledBy:    m.CancelledBy,
 		CancelledAt:    m.CancelledAt,
@@ -274,6 +279,13 @@ func (r *BookingRepository) toEntity(m *model.BookingModel) *entity.Booking {
 	}
 
 	return b
+}
+
+func toPaymentEntityFromBooking(m *model.PaymentModel) *entity.Payment {
+	if m == nil {
+		return nil
+	}
+	return toPaymentEntity(m)
 }
 
 func (r *BookingRepository) toEntities(models []model.BookingModel) []*entity.Booking {

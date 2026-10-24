@@ -7,7 +7,7 @@ type CreateBookingRequest struct {
 	Address       string `json:"address" validate:"required,max=255"`
 	Notes         string `json:"notes,omitempty" validate:"omitempty,max=500"`
 	AddOnIDs      []uint `json:"add_on_ids,omitempty"`
-	PaymentMethod string `json:"payment_method" validate:"required,oneof=cash_on_service bank_transfer e_wallet"`
+	PaymentMethod string `json:"payment_method" validate:"required,oneof=qris cash_on_service bank_transfer e_wallet"`
 }
 
 type AcceptBookingRequest struct {
@@ -48,6 +48,7 @@ type BookingResponse struct {
 	Total          int64                  `json:"total"`
 	PaymentMethod  string                 `json:"payment_method"`
 	Status         string                 `json:"status"`
+	Payment        *PaymentResponse       `json:"payment,omitempty"`
 	CancellationID *uint                  `json:"cancellation_id,omitempty"`
 	CancelledBy    *uint                  `json:"cancelled_by,omitempty"`
 	CancelledAt    *string                `json:"cancelled_at,omitempty"`

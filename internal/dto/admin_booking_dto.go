@@ -10,7 +10,12 @@ type AdminBookingRow struct {
 	ScheduleDate *string `json:"schedule_date,omitempty"`
 	Status       string  `json:"status"`
 	Total        int64   `json:"total"`
-	CreatedAt    string  `json:"created_at"`
+	// PaymentMethod and PaymentStatus let ops see whether the money was
+	// actually collected (and whether a refund is owed) without opening
+	// every booking.
+	PaymentMethod string `json:"payment_method,omitempty"`
+	PaymentStatus string `json:"payment_status,omitempty"`
+	CreatedAt     string `json:"created_at"`
 }
 
 type AdminBookingListResponse struct {

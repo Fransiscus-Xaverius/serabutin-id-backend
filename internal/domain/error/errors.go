@@ -25,6 +25,7 @@ var (
 	ErrModuleDisabled        = errors.New("module is disabled")
 	ErrAccountSuspended      = errors.New("account is suspended")
 	ErrAlreadyExists         = errors.New("resource already exists")
+	ErrPaymentRequired       = errors.New("payment required")
 )
 
 type DomainError struct {

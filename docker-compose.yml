@@ -52,6 +52,16 @@ services:
       STORAGE_DRIVER: local
       STORAGE_LOCAL_PATH: ./uploads
       STORAGE_LOCAL_URL: ${STORAGE_LOCAL_URL:-http://localhost:3000/uploads}
+      # Prepayment: local development simulates the DOKU checkout so the
+      # whole flow is testable without credentials. Use sandbox/production
+      # with real credentials outside development.
+      DOKU_MODE: ${DOKU_MODE:-mock}
+      DOKU_CLIENT_ID: ${DOKU_CLIENT_ID:-}
+      DOKU_SECRET_KEY: ${DOKU_SECRET_KEY:-}
+      DOKU_BASE_URL: ${DOKU_BASE_URL:-https://api-sandbox.doku.com}
+      DOKU_HUB_ACCOUNT_ID: ${DOKU_HUB_ACCOUNT_ID:-}
+      PAYMENT_EXPIRY_MINUTES: ${PAYMENT_EXPIRY_MINUTES:-60}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:5173}
     volumes:
       - ./uploads:/app/uploads
     depends_on:
