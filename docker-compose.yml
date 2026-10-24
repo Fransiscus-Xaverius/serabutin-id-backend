@@ -60,6 +60,7 @@ services:
       DOKU_SECRET_KEY: ${DOKU_SECRET_KEY:-}
       DOKU_BASE_URL: ${DOKU_BASE_URL:-https://api-sandbox.doku.com}
       DOKU_HUB_ACCOUNT_ID: ${DOKU_HUB_ACCOUNT_ID:-}
+      DOKU_PAYMENT_METHODS: ${DOKU_PAYMENT_METHODS:-qris}
       PAYMENT_EXPIRY_MINUTES: ${PAYMENT_EXPIRY_MINUTES:-60}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:5173}
     volumes:

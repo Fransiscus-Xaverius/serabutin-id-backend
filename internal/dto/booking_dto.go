@@ -1,13 +1,16 @@
 package dto
 
 type CreateBookingRequest struct {
-	ServiceID     uint   `json:"service_id" validate:"required"`
-	ScheduleDate  string `json:"schedule_date" validate:"required"`
-	ScheduleTime  string `json:"schedule_time" validate:"required"`
-	Address       string `json:"address" validate:"required,max=255"`
-	Notes         string `json:"notes,omitempty" validate:"omitempty,max=500"`
-	AddOnIDs      []uint `json:"add_on_ids,omitempty"`
-	PaymentMethod string `json:"payment_method" validate:"required,oneof=qris cash_on_service bank_transfer e_wallet"`
+	ServiceID    uint   `json:"service_id" validate:"required"`
+	ScheduleDate string `json:"schedule_date" validate:"required"`
+	ScheduleTime string `json:"schedule_time" validate:"required"`
+	Address      string `json:"address" validate:"required,max=255"`
+	Notes        string `json:"notes,omitempty" validate:"omitempty,max=500"`
+	AddOnIDs     []uint `json:"add_on_ids,omitempty"`
+	// PaymentMethod is the channel slug of an enabled prepayment method
+	// (see GET /api/v1/booking-config). The enabled set is a runtime
+	// configuration, so the usecase validates it.
+	PaymentMethod string `json:"payment_method" validate:"required,max=30"`
 }
 
 type AcceptBookingRequest struct {

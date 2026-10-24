@@ -87,6 +87,7 @@ func TestCreateCheckout_SendsSignedQRISRequest(t *testing.T) {
 		CustomerPhone: "081234567890",
 		CallbackURL:   "http://localhost:5173/payment/return?booking_id=42",
 		ExpiryMinutes: 60,
+		Channel:       "qris",
 	})
 
 	require.NoError(t, err)
@@ -138,6 +139,7 @@ func TestCreateCheckout_OmitsHubAccountWhenNotConfigured(t *testing.T) {
 		InvoiceNumber: "SRB-43-1",
 		Amount:        10000,
 		ExpiryMinutes: 30,
+		Channel:       "qris",
 	})
 	require.NoError(t, err)
 
@@ -167,6 +169,7 @@ func TestCreateCheckout_SendsOverrideNotificationURLWhenConfigured(t *testing.T)
 		InvoiceNumber: "SRB-45-1",
 		Amount:        10000,
 		ExpiryMinutes: 30,
+		Channel:       "qris",
 	})
 	require.NoError(t, err)
 
@@ -192,6 +195,7 @@ func TestCreateCheckout_OmitsOverrideNotificationURLWhenNotConfigured(t *testing
 		InvoiceNumber: "SRB-46-1",
 		Amount:        10000,
 		ExpiryMinutes: 30,
+		Channel:       "qris",
 	})
 	require.NoError(t, err)
 
@@ -201,12 +205,57 @@ func TestCreateCheckout_OmitsOverrideNotificationURLWhenNotConfigured(t *testing
 	assert.False(t, hasAdditional)
 }
 
+func TestCreateCheckout_MapsChannelSlugToDOKUChannelName(t *testing.T) {
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"response":{"payment":{"url":"https://checkout.doku.test/pay/5"}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{ClientID: testClientID, SecretKey: testSecret, BaseURL: server.URL})
+
+	// The slug is our vocabulary; DOKU only knows its own channel names.
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		InvoiceNumber: "SRB-47-1",
+		Amount:        10000,
+		ExpiryMinutes: 30,
+		Channel:       "ovo",
+	})
+	require.NoError(t, err)
+
+	var sent map[string]interface{}
+	require.NoError(t, json.Unmarshal(capturedBody, &sent))
+	checkoutPayment := sent["payment"].(map[string]interface{})
+	assert.Equal(t, []interface{}{"EMONEY_OVO"}, checkoutPayment["payment_method_types"])
+}
+
+func TestCreateCheckout_RejectsUnknownChannel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"response":{"payment":{"url":"https://checkout.doku.test/pay/6"}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{ClientID: testClientID, SecretKey: testSecret, BaseURL: server.URL})
+
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		InvoiceNumber: "SRB-48-1",
+		Amount:        10000,
+		ExpiryMinutes: 30,
+		Channel:       "carrier_pigeon",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "carrier_pigeon")
+}
+
 func TestCreateCheckout_FailsWithoutCredentials(t *testing.T) {
 	client := NewClient(Config{BaseURL: "https://api-sandbox.doku.com"})
 
 	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
 		InvoiceNumber: "SRB-44-1",
 		Amount:        10000,
+		Channel:       "qris",
 	})
 
 	require.Error(t, err)

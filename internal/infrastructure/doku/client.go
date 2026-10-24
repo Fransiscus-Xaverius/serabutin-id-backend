@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/payment"
 )
 
@@ -76,7 +77,11 @@ func (c *Client) CreateCheckout(ctx context.Context, req payment.CreateCheckoutR
 	requestID := uuid.NewString()
 	timestamp := c.now().UTC().Format(timestampLayout)
 
-	body, err := json.Marshal(c.checkoutBody(req))
+	checkout, err := c.checkoutBody(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(checkout)
 	if err != nil {
 		return nil, fmt.Errorf("marshal doku checkout request: %w", err)
 	}
@@ -159,7 +164,12 @@ func (c *Client) VerifyNotification(rawBody []byte, headers map[string]string) e
 	return nil
 }
 
-func (c *Client) checkoutBody(req payment.CreateCheckoutRequest) checkoutRequest {
+func (c *Client) checkoutBody(req payment.CreateCheckoutRequest) (checkoutRequest, error) {
+	channel, ok := entity.DOKUChannelName(req.Channel)
+	if !ok {
+		return checkoutRequest{}, fmt.Errorf("unknown payment channel %q", req.Channel)
+	}
+
 	body := checkoutRequest{
 		Order: checkoutOrder{
 			Amount:         req.Amount,
@@ -172,7 +182,7 @@ func (c *Client) checkoutBody(req payment.CreateCheckoutRequest) checkoutRequest
 		},
 		Payment: checkoutPayment{
 			PaymentDueDate:     req.ExpiryMinutes,
-			PaymentMethodTypes: []string{"QRIS"},
+			PaymentMethodTypes: []string{channel},
 			Type:               "SALE",
 		},
 		Customer: checkoutCustomer{
@@ -201,7 +211,7 @@ func (c *Client) checkoutBody(req payment.CreateCheckoutRequest) checkoutRequest
 			OverrideNotificationURL: c.cfg.OverrideNotificationURL,
 		}
 	}
-	return body
+	return body, nil
 }
 
 type checkoutRequest struct {

@@ -253,7 +253,7 @@ func newPaymentTestUC(t *testing.T, gateway payment.Gateway) (*PaymentUsecase, *
 	// payment transaction, so both fakes share one booking store.
 	paymentRepo.bookings = bookingRepo.bookings
 	notifier := &recordingNotifier{}
-	uc := NewPaymentUsecase(paymentRepo, bookingRepo, nil, gateway, "sandbox", 60, "http://localhost:5173")
+	uc := NewPaymentUsecase(paymentRepo, bookingRepo, nil, gateway, "sandbox", []string{"qris"}, 60, "http://localhost:5173")
 	uc.SetNotifier(notifier)
 	return uc, paymentRepo, bookingRepo, notifier
 }
@@ -263,7 +263,7 @@ func TestPaymentUsecase_CreateCheckout_RecordsPaymentAndCheckoutURL(t *testing.T
 	uc, paymentRepo, _, _ := newPaymentTestUC(t, gateway)
 
 	booking := &entity.Booking{ID: 42, CustomerID: 7, Total: 125000, Status: entity.BookingStatusPendingPayment}
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 
 	require.NoError(t, err)
 	require.NotNil(t, record)
@@ -287,7 +287,7 @@ func TestPaymentUsecase_CreateCheckout_GatewayFailure_RecordsFailedPayment(t *te
 	uc, paymentRepo, _, _ := newPaymentTestUC(t, gateway)
 
 	booking := &entity.Booking{ID: 43, CustomerID: 7, Total: 90000}
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 
 	require.Error(t, err)
 	require.NotNil(t, record)
@@ -320,7 +320,7 @@ func TestPaymentUsecase_ApplyNotification_SuccessMarksPaidAndReleasesBooking(t *
 
 	booking := &entity.Booking{ID: 10, CustomerID: 7, ProviderID: 9, Total: 50000, Status: entity.BookingStatusPendingPayment}
 	bookingRepo.bookings[10] = booking
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 	require.NoError(t, err)
 
 	transition, err := uc.ApplyNotification(context.Background(),
@@ -348,7 +348,7 @@ func TestPaymentUsecase_ApplyNotification_DuplicateIsIdempotent(t *testing.T) {
 	uc, _, _, notifier := newPaymentTestUC(t, gateway)
 
 	booking := &entity.Booking{ID: 11, CustomerID: 7, ProviderID: 9, Total: 50000, Status: entity.BookingStatusPendingPayment}
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 	require.NoError(t, err)
 	body := notificationBody(record.InvoiceNumber, 50000, "SUCCESS")
 
@@ -367,7 +367,7 @@ func TestPaymentUsecase_ApplyNotification_AmountMismatchIsRejected(t *testing.T)
 	uc, _, _, _ := newPaymentTestUC(t, gateway)
 
 	booking := &entity.Booking{ID: 12, CustomerID: 7, Total: 50000}
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 	require.NoError(t, err)
 
 	_, err = uc.ApplyNotification(context.Background(),
@@ -383,7 +383,7 @@ func TestPaymentUsecase_ApplyNotification_ExpiredExpiresBooking(t *testing.T) {
 
 	booking := &entity.Booking{ID: 13, CustomerID: 7, Total: 50000, Status: entity.BookingStatusPendingPayment}
 	bookingRepo.bookings[13] = booking
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 	require.NoError(t, err)
 
 	_, err = uc.ApplyNotification(context.Background(),
@@ -401,7 +401,7 @@ func TestPaymentUsecase_ApplyNotification_FailedKeepsBookingPendingPayment(t *te
 
 	booking := &entity.Booking{ID: 14, CustomerID: 7, Total: 50000, Status: entity.BookingStatusPendingPayment}
 	bookingRepo.bookings[14] = booking
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 	require.NoError(t, err)
 
 	_, err = uc.ApplyNotification(context.Background(),
@@ -418,7 +418,7 @@ func TestPaymentUsecase_ExpirePending_ExpiresStaleCheckout(t *testing.T) {
 
 	booking := &entity.Booking{ID: 15, CustomerID: 7, Total: 50000, Status: entity.BookingStatusPendingPayment}
 	bookingRepo.bookings[15] = booking
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 	require.NoError(t, err)
 
 	stale := time.Now().Add(-time.Minute)
@@ -458,7 +458,7 @@ func TestPaymentUsecase_ApplyNotification_QRISDecimalAmountIsAccepted(t *testing
 
 	booking := &entity.Booking{ID: 16, CustomerID: 7, ProviderID: 9, Total: 20000, Status: entity.BookingStatusPendingPayment}
 	bookingRepo.bookings[16] = booking
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 	require.NoError(t, err)
 
 	// The exact QRIS notification shape from DOKU's documentation.
@@ -484,7 +484,7 @@ func TestPaymentUsecase_MarkRefundPendingForBooking_OnlyMovesPaidPayments(t *tes
 	uc, _, _, _ := newPaymentTestUC(t, gateway)
 
 	booking := &entity.Booking{ID: 16, CustomerID: 7, Total: 50000}
-	record, err := uc.CreateCheckout(context.Background(), booking)
+	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
 	require.NoError(t, err)
 
 	require.NoError(t, uc.MarkRefundPendingForBooking(context.Background(), 16))

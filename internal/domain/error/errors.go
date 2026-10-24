@@ -26,6 +26,7 @@ var (
 	ErrAccountSuspended      = errors.New("account is suspended")
 	ErrAlreadyExists         = errors.New("resource already exists")
 	ErrPaymentRequired       = errors.New("payment required")
+	ErrPaymentNotConfigured  = errors.New("payment not configured")
 )
 
 type DomainError struct {

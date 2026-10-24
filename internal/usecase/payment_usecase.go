@@ -29,6 +29,7 @@ type PaymentUsecase struct {
 	gateway       payment.Gateway
 	notifier      Notifier
 	mode          string
+	channels      []string
 	expiryMinutes int
 	appPublicURL  string
 	now           func() time.Time
@@ -40,11 +41,15 @@ func NewPaymentUsecase(
 	userRepo repository.UserRepository,
 	gateway payment.Gateway,
 	mode string,
+	channels []string,
 	expiryMinutes int,
 	appPublicURL string,
 ) *PaymentUsecase {
 	if expiryMinutes <= 0 {
 		expiryMinutes = 60
+	}
+	if len(channels) == 0 {
+		channels = []string{entity.PaymentChannelQRIS}
 	}
 	return &PaymentUsecase{
 		paymentRepo:   paymentRepo,
@@ -52,10 +57,28 @@ func NewPaymentUsecase(
 		userRepo:      userRepo,
 		gateway:       gateway,
 		mode:          strings.ToLower(strings.TrimSpace(mode)),
+		channels:      append([]string(nil), channels...),
 		expiryMinutes: expiryMinutes,
 		appPublicURL:  strings.TrimRight(appPublicURL, "/"),
 		now:           time.Now,
 	}
+}
+
+// EnabledChannels are the channel slugs we currently offer at checkout.
+func (uc *PaymentUsecase) EnabledChannels() []string {
+	return append([]string(nil), uc.channels...)
+}
+
+// IsPrepaidChannel reports whether a channel slug is one of the enabled
+// prepayment channels. Bookings on any other method are rejected, so the
+// API cannot create an order that is never paid for.
+func (uc *PaymentUsecase) IsPrepaidChannel(channel string) bool {
+	for _, enabled := range uc.channels {
+		if enabled == channel {
+			return true
+		}
+	}
+	return false
 }
 
 func (uc *PaymentUsecase) SetNotifier(n Notifier) {
@@ -77,12 +100,18 @@ func (uc *PaymentUsecase) ExpiryMinutes() int {
 // CreateCheckout persists the payment row first, then asks the provider for a
 // checkout session. A provider failure still leaves a real failed payment row
 // (with last_error) so the API can report the truth to the customer.
-func (uc *PaymentUsecase) CreateCheckout(ctx context.Context, booking *entity.Booking) (*entity.Payment, error) {
+func (uc *PaymentUsecase) CreateCheckout(ctx context.Context, booking *entity.Booking, channel string) (*entity.Payment, error) {
 	if booking == nil {
 		return nil, apperror.NewDomainError(apperror.ErrValidation, "INVALID_BOOKING", "booking is required")
 	}
 	if uc.gateway == nil {
 		return nil, fmt.Errorf("payment gateway is not configured")
+	}
+	if channel == "" {
+		channel = entity.PaymentChannelQRIS
+	}
+	if !uc.IsPrepaidChannel(channel) {
+		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_METHOD_UNAVAILABLE", "payment method is not available")
 	}
 
 	name, email, phone := "Pelanggan", "", ""
@@ -105,7 +134,7 @@ func (uc *PaymentUsecase) CreateCheckout(ctx context.Context, booking *entity.Bo
 		InvoiceNumber: fmt.Sprintf("SRB-%d-%d", booking.ID, uc.now().UnixNano()),
 		Amount:        booking.Total,
 		Currency:      "IDR",
-		Channel:       entity.PaymentChannelQRIS,
+		Channel:       channel,
 		Status:        entity.PaymentStatusPending,
 		Provider:      uc.providerName(),
 		ExpiresAt:     &expiresAt,
@@ -125,6 +154,7 @@ func (uc *PaymentUsecase) CreateCheckout(ctx context.Context, booking *entity.Bo
 		CustomerPhone: phone,
 		CallbackURL:   fmt.Sprintf("%s/payment/return?booking_id=%d", uc.appPublicURL, booking.ID),
 		ExpiryMinutes: uc.expiryMinutes,
+		Channel:       channel,
 	})
 	if err != nil {
 		record.Status = entity.PaymentStatusFailed

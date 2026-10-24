@@ -41,13 +41,28 @@ func (f *prepayFakeServiceRepo) ListForAdmin(ctx context.Context, filter reposit
 
 type prepayFakeInitiator struct {
 	created []*entity.Booking
+	channel string
 	payment *entity.Payment
 	err     error
+	enabled []string
 }
 
-func (f *prepayFakeInitiator) CreateCheckout(ctx context.Context, booking *entity.Booking) (*entity.Payment, error) {
+func (f *prepayFakeInitiator) CreateCheckout(ctx context.Context, booking *entity.Booking, channel string) (*entity.Payment, error) {
 	f.created = append(f.created, booking)
+	f.channel = channel
 	return f.payment, f.err
+}
+
+func (f *prepayFakeInitiator) IsPrepaidChannel(channel string) bool {
+	if len(f.enabled) == 0 {
+		return channel == entity.PaymentChannelQRIS
+	}
+	for _, enabled := range f.enabled {
+		if enabled == channel {
+			return true
+		}
+	}
+	return false
 }
 
 type prepayFakeRefundMarker struct {
@@ -123,10 +138,38 @@ func TestCreateBooking_LegacyMethod_KeepsPendingAndCreatesNoPayment(t *testing.T
 
 	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest("cash_on_service"))
 
-	require.NoError(t, err)
-	assert.Equal(t, entity.BookingStatusPending, booking.Status)
-	assert.Nil(t, booking.Payment)
+	require.Error(t, err, "a method that is not an enabled prepayment channel must be refused")
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "PAYMENT_METHOD_UNAVAILABLE", domainErr.Code)
+	assert.Nil(t, booking)
 	assert.Empty(t, initiator.created, "legacy bookings do not start a checkout")
+}
+
+func TestCreateBooking_ChannelThatIsNotEnabled_IsRefused(t *testing.T) {
+	uc, _, initiator, _, _ := newPrepayTestUC(t)
+	initiator.enabled = []string{"qris"}
+
+	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest("ovo"))
+
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "PAYMENT_METHOD_UNAVAILABLE", domainErr.Code)
+	assert.Nil(t, booking)
+	assert.Empty(t, initiator.created)
+}
+
+func TestCreateBooking_EnabledChannel_IsPassedToTheCheckout(t *testing.T) {
+	uc, _, initiator, _, _ := newPrepayTestUC(t)
+	initiator.enabled = []string{"qris", "ovo"}
+
+	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest("ovo"))
+
+	require.NoError(t, err)
+	assert.Equal(t, entity.BookingStatusPendingPayment, booking.Status)
+	assert.Equal(t, "ovo", initiator.channel, "the chosen channel must reach the provider request")
+	assert.Equal(t, "ovo", booking.PaymentMethod)
 }
 
 func TestCreateBooking_CheckoutFailure_StillReturnsBookingWithFailedPayment(t *testing.T) {

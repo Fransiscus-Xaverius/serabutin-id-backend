@@ -39,7 +39,7 @@ func (h *PaymentHandler) GetConfig(c fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, dto.BookingConfigResponse{
 		PlatformFee:          h.platformFee,
 		PaymentExpiryMinutes: h.paymentUsecase.ExpiryMinutes(),
-		PaymentMethods:       []string{entity.PaymentChannelQRIS},
+		PaymentMethods:       h.paymentUsecase.EnabledChannels(),
 	})
 }
 

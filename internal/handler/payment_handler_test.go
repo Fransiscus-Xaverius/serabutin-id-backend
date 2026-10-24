@@ -121,7 +121,7 @@ func newPaymentHandlerApp(t *testing.T, mode string, gateway payment.Gateway, ac
 	t.Helper()
 	paymentRepo := &handlerFakePaymentRepo{payments: map[string]*entity.Payment{}}
 	bookingRepo := &handlerFakeBookingRepo{bookings: bookings}
-	uc := usecase.NewPaymentUsecase(paymentRepo, bookingRepo, nil, gateway, mode, 60, "http://localhost:5173")
+	uc := usecase.NewPaymentUsecase(paymentRepo, bookingRepo, nil, gateway, mode, []string{"qris"}, 60, "http://localhost:5173")
 	h := NewPaymentHandler(uc, 5000)
 
 	app := fiber.New(fiber.Config{ErrorHandler: apierror.GlobalErrorHandler})

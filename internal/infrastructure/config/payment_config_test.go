@@ -52,3 +52,29 @@ func TestValidatePaymentConfig_RejectsUnknownMode(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "DOKU_MODE")
 }
+
+func TestParsePaymentChannels_NormalisesTheList(t *testing.T) {
+	channels := ParsePaymentChannels(" qris, OVO ,dana,")
+
+	assert.Equal(t, []string{"qris", "ovo", "dana"}, channels)
+}
+
+func TestValidatePaymentChannels_RejectsEmptyUnknownAndDuplicateChannels(t *testing.T) {
+	err := ValidatePaymentChannels(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at least one")
+
+	err = ValidatePaymentChannels([]string{"carrier_pigeon"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "carrier_pigeon")
+
+	err = ValidatePaymentChannels([]string{"qris", "qris"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate")
+}
+
+func TestValidatePaymentChannels_AcceptsKnownChannels(t *testing.T) {
+	err := ValidatePaymentChannels([]string{"qris", "ovo", "dana", "va_bca"})
+
+	assert.NoError(t, err)
+}

@@ -26,10 +26,12 @@ type BookingUsecase struct {
 }
 
 // PaymentInitiator creates the provider checkout for a newly created
-// booking. Implemented by PaymentUsecase; nil means the deployment has no
-// payment gateway wired and prepaid bookings cannot be started.
+// booking and knows which payment channels are enabled. Implemented by
+// PaymentUsecase; nil means the deployment has no payment gateway wired and
+// prepaid bookings cannot be started.
 type PaymentInitiator interface {
-	CreateCheckout(ctx context.Context, booking *entity.Booking) (*entity.Payment, error)
+	CreateCheckout(ctx context.Context, booking *entity.Booking, channel string) (*entity.Payment, error)
+	IsPrepaidChannel(channel string) bool
 }
 
 // PaymentRefundMarker records the manual refund obligation for a paid
@@ -170,10 +172,14 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 	total := subTotal + uc.platformFee
 
 	// Prepaid bookings are created as pending_payment: the Mitra only sees
-	// the booking once the payment webhook confirms the money arrived.
-	status := entity.BookingStatusPending
-	if req.PaymentMethod == entity.PaymentChannelQRIS {
-		status = entity.BookingStatusPendingPayment
+	// the booking once the payment webhook confirms the money arrived. Every
+	// other payment method is refused — an order that is never paid for must
+	// not be creatable through the API.
+	if uc.paymentInitiator == nil {
+		return nil, apperror.NewDomainError(apperror.ErrPaymentNotConfigured, "PAYMENT_NOT_CONFIGURED", "payment is not available right now")
+	}
+	if !uc.paymentInitiator.IsPrepaidChannel(req.PaymentMethod) {
+		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_METHOD_UNAVAILABLE", "payment method is not available")
 	}
 
 	booking := &entity.Booking{
@@ -188,7 +194,7 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 		PlatformFee:   uc.platformFee,
 		Total:         total,
 		PaymentMethod: req.PaymentMethod,
-		Status:        status,
+		Status:        entity.BookingStatusPendingPayment,
 		BookingAddOns: bookingAddOns,
 	}
 
@@ -197,27 +203,19 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 		return nil, err
 	}
 
-	if req.PaymentMethod == entity.PaymentChannelQRIS {
-		if uc.paymentInitiator == nil {
-			log.Printf("[BookingUsecase.CreateBooking] booking %d has no payment initiator configured", booking.ID)
-		} else {
-			// A provider failure is not fatal here: the payment row records
-			// the failure and the customer sees the real state on the
-			// booking instead of a false success.
-			payment, err := uc.paymentInitiator.CreateCheckout(ctx, booking)
-			if payment != nil {
-				booking.Payment = payment
-			}
-			if err != nil {
-				log.Printf("[BookingUsecase.CreateBooking] start checkout for booking %d: %v", booking.ID, err)
-			}
-		}
-		uc.notifyCustomer(ctx, booking, "booking.created", "Pesanan dibuat",
-			"Pesanan dibuat. Selesaikan pembayaran QRIS agar pesanan diteruskan ke Mitra.")
-		return booking, nil
+	// A provider failure is not fatal here: the payment row records the
+	// failure and the customer sees the real state on the booking instead
+	// of a false success.
+	payment, err := uc.paymentInitiator.CreateCheckout(ctx, booking, req.PaymentMethod)
+	if payment != nil {
+		booking.Payment = payment
+	}
+	if err != nil {
+		log.Printf("[BookingUsecase.CreateBooking] start checkout for booking %d: %v", booking.ID, err)
 	}
 
-	uc.notifyBoth(ctx, booking, "booking.created", "Pesanan baru", "Pesanan baru dibuat dan menunggu konfirmasi mitra.")
+	uc.notifyCustomer(ctx, booking, "booking.created", "Pesanan dibuat",
+		"Pesanan dibuat. Selesaikan pembayaran agar pesanan diteruskan ke Mitra.")
 	return booking, nil
 }
 

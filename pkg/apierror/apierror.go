@@ -90,6 +90,8 @@ func FromDomainError(err error) *APIError {
 			return NewAPIError(fiber.StatusBadRequest, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrPaymentRequired):
 			return NewAPIError(fiber.StatusPaymentRequired, domainErr.Code, domainErr.Message)
+		case errors.Is(domainErr.Unwrap(), apperror.ErrPaymentNotConfigured):
+			return NewAPIError(fiber.StatusServiceUnavailable, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrReviewAlreadyExists):
 			return NewAPIError(fiber.StatusConflict, domainErr.Code, domainErr.Message)
 		case errors.Is(domainErr.Unwrap(), apperror.ErrAlreadyExists):

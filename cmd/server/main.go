@@ -152,6 +152,7 @@ func main() {
 		userRepo,
 		paymentGateway,
 		cfg.DOKUMode,
+		cfg.DOKUPaymentMethods,
 		cfg.PaymentExpiryMinutes,
 		cfg.AppPublicURL,
 	)

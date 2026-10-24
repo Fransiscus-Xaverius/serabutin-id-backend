@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+
+	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 )
 
 type Config struct {
@@ -63,8 +65,12 @@ type Config struct {
 	// local tunnel) for one request. DOKU requires the URL path to match
 	// DOKUNotificationPath.
 	DOKUOverrideNotificationURL string
-	PaymentExpiryMinutes        int
-	AppPublicURL                string
+	// DOKUPaymentMethods are the channel slugs we offer at checkout
+	// (e.g. "qris,ovo"). Each slug maps to a DOKU channel name at the
+	// provider boundary, so opening a channel is a configuration change.
+	DOKUPaymentMethods   []string
+	PaymentExpiryMinutes int
+	AppPublicURL         string
 }
 
 const (
@@ -132,6 +138,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("DOKU_BASE_URL", "https://api-sandbox.doku.com")
 	viper.SetDefault("DOKU_HUB_ACCOUNT_ID", "")
 	viper.SetDefault("DOKU_NOTIFICATION_PATH", "/api/v1/payments/doku/webhook")
+	viper.SetDefault("DOKU_OVERRIDE_NOTIFICATION_URL", "")
+	viper.SetDefault("DOKU_PAYMENT_METHODS", "qris")
 	viper.SetDefault("PAYMENT_EXPIRY_MINUTES", 60)
 	viper.SetDefault("APP_PUBLIC_URL", "http://localhost:5173")
 
@@ -189,6 +197,7 @@ func Load() (*Config, error) {
 	cfg.DOKUHubAccountID = viper.GetString("DOKU_HUB_ACCOUNT_ID")
 	cfg.DOKUNotificationPath = viper.GetString("DOKU_NOTIFICATION_PATH")
 	cfg.DOKUOverrideNotificationURL = strings.TrimRight(strings.TrimSpace(viper.GetString("DOKU_OVERRIDE_NOTIFICATION_URL")), "/")
+	cfg.DOKUPaymentMethods = ParsePaymentChannels(viper.GetString("DOKU_PAYMENT_METHODS"))
 	cfg.PaymentExpiryMinutes = viper.GetInt("PAYMENT_EXPIRY_MINUTES")
 	if cfg.PaymentExpiryMinutes <= 0 {
 		cfg.PaymentExpiryMinutes = 60
@@ -201,8 +210,46 @@ func Load() (*Config, error) {
 	if err := ValidatePaymentConfig(cfg.Environment, cfg.DOKUMode, cfg.DOKUClientID, cfg.DOKUSecretKey); err != nil {
 		return nil, err
 	}
+	if err := ValidatePaymentChannels(cfg.DOKUPaymentMethods); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
+}
+
+// ParsePaymentChannels splits the comma separated channel list into slugs.
+// Order is preserved: the first channel is the default one the customer
+// sees selected.
+func ParsePaymentChannels(raw string) []string {
+	parts := strings.Split(raw, ",")
+	channels := make([]string, 0, len(parts))
+	for _, part := range parts {
+		slug := strings.ToLower(strings.TrimSpace(part))
+		if slug == "" {
+			continue
+		}
+		channels = append(channels, slug)
+	}
+	return channels
+}
+
+// ValidatePaymentChannels rejects an empty or unknown channel list, so a
+// typo cannot silently produce a checkout that offers no payment method.
+func ValidatePaymentChannels(channels []string) error {
+	if len(channels) == 0 {
+		return fmt.Errorf("DOKU_PAYMENT_METHODS must list at least one payment channel")
+	}
+	seen := make(map[string]struct{}, len(channels))
+	for _, slug := range channels {
+		if _, ok := entity.DOKUChannelName(slug); !ok {
+			return fmt.Errorf("unknown payment channel %q in DOKU_PAYMENT_METHODS", slug)
+		}
+		if _, dup := seen[slug]; dup {
+			return fmt.Errorf("duplicate payment channel %q in DOKU_PAYMENT_METHODS", slug)
+		}
+		seen[slug] = struct{}{}
+	}
+	return nil
 }
 
 // ValidatePaymentConfig rejects unsafe combinations: production must never

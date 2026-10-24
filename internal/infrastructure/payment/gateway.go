@@ -35,6 +35,9 @@ type CreateCheckoutRequest struct {
 	CustomerPhone string
 	CallbackURL   string
 	ExpiryMinutes int
+	// Channel is our slug for the payment method (e.g. "qris"). The
+	// provider maps it to its own channel name.
+	Channel string
 }
 
 type CreateCheckoutResult struct {
