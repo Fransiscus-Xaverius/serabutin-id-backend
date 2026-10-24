@@ -59,8 +59,12 @@ type Config struct {
 	DOKUBaseURL          string
 	DOKUHubAccountID     string
 	DOKUNotificationPath string
-	PaymentExpiryMinutes int
-	AppPublicURL         string
+	// DOKUOverrideNotificationURL points notifications at another host (a
+	// local tunnel) for one request. DOKU requires the URL path to match
+	// DOKUNotificationPath.
+	DOKUOverrideNotificationURL string
+	PaymentExpiryMinutes        int
+	AppPublicURL                string
 }
 
 const (
@@ -184,6 +188,7 @@ func Load() (*Config, error) {
 	cfg.DOKUBaseURL = viper.GetString("DOKU_BASE_URL")
 	cfg.DOKUHubAccountID = viper.GetString("DOKU_HUB_ACCOUNT_ID")
 	cfg.DOKUNotificationPath = viper.GetString("DOKU_NOTIFICATION_PATH")
+	cfg.DOKUOverrideNotificationURL = strings.TrimRight(strings.TrimSpace(viper.GetString("DOKU_OVERRIDE_NOTIFICATION_URL")), "/")
 	cfg.PaymentExpiryMinutes = viper.GetInt("PAYMENT_EXPIRY_MINUTES")
 	if cfg.PaymentExpiryMinutes <= 0 {
 		cfg.PaymentExpiryMinutes = 60

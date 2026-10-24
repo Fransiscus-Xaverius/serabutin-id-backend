@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -400,11 +401,23 @@ type dokuNotification struct {
 	} `json:"transaction"`
 }
 
+// parseNotificationAmount reads order.amount from a DOKU notification.
+// DOKU is inconsistent here: most channels send an integer, but the QRIS
+// notification sends a decimal (e.g. 20000.00), and some channels quote the
+// number as a string. Both are accepted; the value is truncated to whole
+// IDR.
 func parseNotificationAmount(raw json.RawMessage) (int64, error) {
 	value := strings.TrimSpace(string(raw))
 	value = strings.Trim(value, `"`)
 	if value == "" || value == "null" {
 		return 0, errors.New("missing amount")
 	}
-	return strconv.ParseInt(value, 10, 64)
+	if amount, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return amount, nil
+	}
+	decimal, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, errors.New("invalid amount")
+	}
+	return int64(math.Round(decimal)), nil
 }

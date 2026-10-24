@@ -436,11 +436,12 @@ func buildPaymentGateway(cfg *config.Config) payment.Gateway {
 		return payment.NewMockGateway(cfg.AppPublicURL)
 	case "sandbox", "production":
 		return doku.NewClient(doku.Config{
-			ClientID:         cfg.DOKUClientID,
-			SecretKey:        cfg.DOKUSecretKey,
-			BaseURL:          cfg.DOKUBaseURL,
-			HubAccountID:     cfg.DOKUHubAccountID,
-			NotificationPath: cfg.DOKUNotificationPath,
+			ClientID:                cfg.DOKUClientID,
+			SecretKey:               cfg.DOKUSecretKey,
+			BaseURL:                 cfg.DOKUBaseURL,
+			HubAccountID:            cfg.DOKUHubAccountID,
+			NotificationPath:        cfg.DOKUNotificationPath,
+			OverrideNotificationURL: cfg.DOKUOverrideNotificationURL,
 		})
 	default:
 		return payment.NewDisabledGateway()

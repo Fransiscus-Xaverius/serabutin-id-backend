@@ -432,6 +432,53 @@ func TestPaymentUsecase_ExpirePending_ExpiresStaleCheckout(t *testing.T) {
 	assert.Equal(t, entity.BookingStatusExpired, booking.Status)
 }
 
+func TestParseNotificationAmount_AcceptsIntegerDecimalAndString(t *testing.T) {
+	// DOKU is inconsistent: most channels send an integer, the QRIS
+	// notification sends a decimal ("amount": 20000.00), and some channels
+	// quote the number.
+	cases := map[string]int64{
+		`20000`:     20000,
+		`20000.00`:  20000,
+		`155000.50`: 155001,
+		`"150000"`:  150000,
+	}
+	for raw, expected := range cases {
+		amount, err := parseNotificationAmount(json.RawMessage(raw))
+		require.NoError(t, err, "raw %s", raw)
+		assert.Equal(t, expected, amount, "raw %s", raw)
+	}
+
+	_, err := parseNotificationAmount(json.RawMessage(`"not-a-number"`))
+	assert.Error(t, err)
+}
+
+func TestPaymentUsecase_ApplyNotification_QRISDecimalAmountIsAccepted(t *testing.T) {
+	gateway := &fakeGateway{url: "https://checkout.test/pay/abc"}
+	uc, _, bookingRepo, _ := newPaymentTestUC(t, gateway)
+
+	booking := &entity.Booking{ID: 16, CustomerID: 7, ProviderID: 9, Total: 20000, Status: entity.BookingStatusPendingPayment}
+	bookingRepo.bookings[16] = booking
+	record, err := uc.CreateCheckout(context.Background(), booking)
+	require.NoError(t, err)
+
+	// The exact QRIS notification shape from DOKU's documentation.
+	body := []byte(`{
+  "service": {"id": "QRIS", "name": "QRIS"},
+  "acquirer": {"id": "DOKU", "name": "DOKU"},
+  "channel": {"id": "QRIS_DOKU", "name": "QRIS-DOKU"},
+  "order": {"invoice_number": "` + record.InvoiceNumber + `", "amount": 20000.00},
+  "transaction": {"status": "SUCCESS", "date": "2025-06-20T04:26:26Z"}
+}`)
+
+	transition, err := uc.ApplyNotification(context.Background(), body, nil)
+
+	require.NoError(t, err, "a decimal amount must not fail the notification")
+	require.NotNil(t, transition)
+	assert.True(t, transition.Applied)
+	assert.Equal(t, entity.BookingStatusPending, booking.Status)
+	assert.Equal(t, entity.PaymentStatusPaid, record.Status)
+}
+
 func TestPaymentUsecase_MarkRefundPendingForBooking_OnlyMovesPaidPayments(t *testing.T) {
 	gateway := &fakeGateway{url: "https://checkout.test/pay/abc"}
 	uc, _, _, _ := newPaymentTestUC(t, gateway)

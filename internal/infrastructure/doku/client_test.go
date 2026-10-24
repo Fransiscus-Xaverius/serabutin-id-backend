@@ -147,6 +147,60 @@ func TestCreateCheckout_OmitsHubAccountWhenNotConfigured(t *testing.T) {
 	assert.False(t, hasAdditionalInfo, "no sub-account routing without a configured hub account")
 }
 
+func TestCreateCheckout_SendsOverrideNotificationURLWhenConfigured(t *testing.T) {
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"response":{"payment":{"url":"https://checkout.doku.test/pay/3"}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		ClientID:                testClientID,
+		SecretKey:               testSecret,
+		BaseURL:                 server.URL,
+		OverrideNotificationURL: "https://tunnel.example/api/v1/payments/doku/webhook",
+	})
+
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		BookingID:     45,
+		InvoiceNumber: "SRB-45-1",
+		Amount:        10000,
+		ExpiryMinutes: 30,
+	})
+	require.NoError(t, err)
+
+	var sent map[string]interface{}
+	require.NoError(t, json.Unmarshal(capturedBody, &sent))
+
+	additional, ok := sent["additional_info"].(map[string]interface{})
+	require.True(t, ok, "the notification override must be sent under additional_info")
+	assert.Equal(t, "https://tunnel.example/api/v1/payments/doku/webhook", additional["override_notification_url"])
+}
+
+func TestCreateCheckout_OmitsOverrideNotificationURLWhenNotConfigured(t *testing.T) {
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"response":{"payment":{"url":"https://checkout.doku.test/pay/4"}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{ClientID: testClientID, SecretKey: testSecret, BaseURL: server.URL})
+
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		InvoiceNumber: "SRB-46-1",
+		Amount:        10000,
+		ExpiryMinutes: 30,
+	})
+	require.NoError(t, err)
+
+	var sent map[string]interface{}
+	require.NoError(t, json.Unmarshal(capturedBody, &sent))
+	_, hasAdditional := sent["additional_info"]
+	assert.False(t, hasAdditional)
+}
+
 func TestCreateCheckout_FailsWithoutCredentials(t *testing.T) {
 	client := NewClient(Config{BaseURL: "https://api-sandbox.doku.com"})
 

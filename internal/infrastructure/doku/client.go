@@ -36,7 +36,11 @@ type Config struct {
 	BaseURL          string
 	HubAccountID     string
 	NotificationPath string
-	HTTPClient       *http.Client
+	// OverrideNotificationURL lets a single request point DOKU at another
+	// host (e.g. a local tunnel) while keeping the same URL path. DOKU
+	// requires the path to match the configured Notification URL.
+	OverrideNotificationURL string
+	HTTPClient              *http.Client
 }
 
 type Client struct {
@@ -189,6 +193,14 @@ func (c *Client) checkoutBody(req payment.CreateCheckoutRequest) checkoutRequest
 			Account: checkoutAccount{ID: c.cfg.HubAccountID},
 		}
 	}
+	if c.cfg.OverrideNotificationURL != "" {
+		// DOKU expects the override under additional_info (snake_case);
+		// the sub-account routing above uses additionalInfo (camelCase).
+		// Both keys can coexist in one request.
+		body.Additional = &checkoutAdditional{
+			OverrideNotificationURL: c.cfg.OverrideNotificationURL,
+		}
+	}
 	return body
 }
 
@@ -197,6 +209,11 @@ type checkoutRequest struct {
 	Payment        checkoutPayment         `json:"payment"`
 	Customer       checkoutCustomer        `json:"customer"`
 	AdditionalInfo *checkoutAdditionalInfo `json:"additionalInfo,omitempty"`
+	Additional     *checkoutAdditional     `json:"additional_info,omitempty"`
+}
+
+type checkoutAdditional struct {
+	OverrideNotificationURL string `json:"override_notification_url,omitempty"`
 }
 
 type checkoutOrder struct {
