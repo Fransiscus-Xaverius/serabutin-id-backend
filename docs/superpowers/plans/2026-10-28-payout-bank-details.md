@@ -725,6 +725,12 @@ git commit -m "feat(payout): add the payout_accounts table and repository"
 
 ### Task 4: Payout usecase — encrypt on write, mask on read, decrypt only here
 
+> **Correction (recorded after implementation):** the bank-code rule planned in this task —
+> 4 or 8 characters, `^[A-Z0-9]{4}([A-Z0-9]{4})?$` — was corrected during implementation to
+> **4 to 11 characters**, `^[A-Z0-9]{4,11}$`, because BCA's real BIC is `BCAIDJA` (7 characters)
+> and the original rule would have rejected it. The snippet below shows the corrected rule; the
+> rest of this task is unchanged.
+
 **Files:**
 - Create: `internal/usecase/payout_usecase.go`
 - Create: `internal/dto/payout_dto.go`
@@ -901,7 +907,7 @@ import (
 )
 
 var (
-	bankCodePattern    = regexp.MustCompile(`^[A-Z0-9]{4}([A-Z0-9]{4})?$`)
+	bankCodePattern    = regexp.MustCompile(`^[A-Z0-9]{4,11}$`)
 	accountNumberPattern = regexp.MustCompile(`^[0-9]{6,32}$`)
 )
 
@@ -916,7 +922,7 @@ type PayoutAccountRequest struct {
 // numeric account number.
 func (r PayoutAccountRequest) Validate() error {
 	if !bankCodePattern.MatchString(r.BankCode) {
-		return errors.New("bank_code must be 4 or 8 uppercase letters or digits")
+		return errors.New("bank_code must be 4 to 11 uppercase letters or digits")
 	}
 	if !accountNumberPattern.MatchString(r.AccountNumber) {
 		return errors.New("account_number must be 6 to 32 digits")

@@ -85,7 +85,7 @@ Status codes: `200` upsert/read · `400` malformed body · `401` no session · `
 
 ## 6. Validation
 
-- `bank_code`: 4 or 8 characters, uppercase letters and digits (SWIFT/BIC).
+- `bank_code`: 4 to 11 characters, uppercase letters and digits (SWIFT/BIC) — pattern `^[A-Z0-9]{4,11}$`. This corrects the earlier rule of 4 or 8 characters (`^[A-Z0-9]{4}([A-Z0-9]{4})?$`), which would have rejected real Indonesian SWIFT/BIC codes of 7 characters — BCA's own BIC is `BCAIDJA` (7) — as well as any other code that is neither 4 nor 8 characters long. **DOKU's supported-bank list is the authority** on which bank codes are payable; this local rule only catches typos (lowercase letters, spaces, hyphens, wrong length).
 - `account_number`: digits only, 6–32 characters (Indonesian bank accounts are numeric).
 - `account_holder_name`: 2–100 characters.
 - **Name match is flagged, not blocked.** If the normalised holder name differs from the registered account name, the row is stored with `name_mismatch = true` and status `unverified`. We cannot hard-block it because a Mitra may hold an account in a legal entity's name and the production entity (PT/CV) is still unresolved. The real gate is DOKU's account validation plus the customer-side confirmation of the beneficiary name at payout time.
