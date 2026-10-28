@@ -60,7 +60,7 @@ func (uc *PayoutUsecase) Upsert(ctx context.Context, userID uint, req dto.Payout
 		return nil, err
 	}
 	if err == nil && existing != nil && existing.UserID != userID {
-		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYOUT_ACCOUNT_DUPLICATE", "this bank account is already used by another mitra")
+		return nil, apperror.NewDomainError(apperror.ErrAlreadyExists, "PAYOUT_ACCOUNT_DUPLICATE", "this bank account is already used by another mitra")
 	}
 
 	user, err := uc.users.FindByID(ctx, userID)
@@ -68,18 +68,21 @@ func (uc *PayoutUsecase) Upsert(ctx context.Context, userID uint, req dto.Payout
 		return nil, err
 	}
 
+	holderName := strings.TrimSpace(req.AccountHolderName)
 	encryptedNumber, err := uc.secret.Encrypt(req.AccountNumber)
 	if err != nil {
 		return nil, err
 	}
-	encryptedHolder, err := uc.secret.Encrypt(req.AccountHolderName)
+	encryptedHolder, err := uc.secret.Encrypt(holderName)
 	if err != nil {
 		return nil, err
 	}
 
+	// A re-save always starts unverified: a changed account number must be
+	// validated again.
 	account := &entity.PayoutAccount{
 		UserID:                     userID,
-		BankCode:                   strings.ToUpper(strings.TrimSpace(req.BankCode)),
+		BankCode:                   req.BankCode,
 		BankName:                   strings.TrimSpace(req.BankName),
 		AccountHolderNameEncrypted: encryptedHolder,
 		AccountNumberEncrypted:     encryptedNumber,
@@ -88,7 +91,7 @@ func (uc *PayoutUsecase) Upsert(ctx context.Context, userID uint, req dto.Payout
 		EncryptionKeyID:            uc.encryptionKeyID,
 		Status:                     entity.PayoutAccountStatusUnverified,
 		// Flagged, not blocked: the production entity (PT/CV) is unresolved.
-		NameMismatch: !sameName(req.AccountHolderName, user.Name),
+		NameMismatch: !sameName(holderName, user.Name),
 	}
 	if err := uc.repo.Upsert(ctx, account); err != nil {
 		return nil, err

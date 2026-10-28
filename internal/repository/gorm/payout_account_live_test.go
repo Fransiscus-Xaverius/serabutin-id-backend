@@ -112,6 +112,31 @@ func TestLivePayoutAccount_FindByFingerprint_SelectsByArgument(t *testing.T) {
 	requirePayoutAccountNotFound(t, err)
 }
 
+func TestLivePayoutAccount_DuplicateFingerprintAcrossUsersIsRejected(t *testing.T) {
+	db := setupBountyLiveDB(t)
+	ctx := context.Background()
+	repo := NewPayoutAccountRepository(db)
+
+	owner := &entity.PayoutAccount{UserID: 71, BankCode: "BCAIDJA", BankName: "Bank Central Asia", AccountHolderNameEncrypted: "enc-holder", AccountNumberEncrypted: "enc-number", AccountLast4: "7890", AccountFingerprint: "fp-shared", EncryptionKeyID: "v1", Status: entity.PayoutAccountStatusUnverified}
+	require.NoError(t, repo.Upsert(ctx, owner))
+
+	intruder := &entity.PayoutAccount{UserID: 72, BankCode: "BCAIDJA", BankName: "Bank Central Asia", AccountHolderNameEncrypted: "enc-holder", AccountNumberEncrypted: "enc-number", AccountLast4: "7890", AccountFingerprint: "fp-shared", EncryptionKeyID: "v1", Status: entity.PayoutAccountStatusUnverified}
+	err := repo.Upsert(ctx, intruder)
+
+	var domainErr *apperror.DomainError
+	require.True(t, errors.As(err, &domainErr), "expected a domain error, got %T", err)
+	assert.Equal(t, "PAYOUT_ACCOUNT_DUPLICATE", domainErr.Code)
+	assert.ErrorIs(t, err, apperror.ErrAlreadyExists)
+
+	var rows int64
+	require.NoError(t, db.Model(&model.PayoutAccountModel{}).Where("user_id = ?", 72).Count(&rows).Error)
+	assert.Equal(t, int64(0), rows, "the rejected account must not be stored for user 72")
+
+	stored, err := repo.FindByFingerprint(ctx, "fp-shared")
+	require.NoError(t, err)
+	assert.Equal(t, uint(71), stored.UserID, "the original owner keeps the account")
+}
+
 func requirePayoutAccountNotFound(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err)

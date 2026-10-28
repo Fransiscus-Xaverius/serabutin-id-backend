@@ -31,6 +31,9 @@ func (r *PayoutAccountRepository) Upsert(ctx context.Context, account *entity.Pa
 		}),
 	}, clause.Returning{}).Create(m).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return payoutAccountDuplicateError()
+		}
 		return payoutAccountDBError(err)
 	}
 	*account = *toPayoutAccountEntity(m)
@@ -103,6 +106,13 @@ func toPayoutAccountEntity(m *model.PayoutAccountModel) *entity.PayoutAccount {
 
 func payoutAccountNotFoundError() error {
 	return apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_ACCOUNT_NOT_FOUND", "payout account not found")
+}
+
+// payoutAccountDuplicateError reports that the fingerprint is already stored
+// for another user. The unique index on account_fingerprint is the guard that
+// holds even when two saves race past the usecase's pre-check.
+func payoutAccountDuplicateError() error {
+	return apperror.NewDomainError(apperror.ErrAlreadyExists, "PAYOUT_ACCOUNT_DUPLICATE", "this bank account is already used by another mitra")
 }
 
 func payoutAccountDBError(err error) error {

@@ -102,7 +102,8 @@ func TestPayoutUsecase_Upsert_EncryptsAndNeverReturnsPlaintext(t *testing.T) {
 }
 
 func TestPayoutUsecase_Upsert_RejectsAnAccountAlreadyUsedByAnotherMitra(t *testing.T) {
-	uc := newTestPayoutUsecase(&fakePayoutAccountRepo{})
+	repo := &fakePayoutAccountRepo{}
+	uc := newTestPayoutUsecase(repo)
 
 	_, err := uc.Upsert(context.Background(), 71, dto.PayoutAccountRequest{
 		BankCode: "BCAIDJA", BankName: "Bank", AccountHolderName: "Siti Rahayu", AccountNumber: "1234567890",
@@ -116,6 +117,8 @@ func TestPayoutUsecase_Upsert_RejectsAnAccountAlreadyUsedByAnotherMitra(t *testi
 	var domainErr *apperror.DomainError
 	require.ErrorAs(t, err, &domainErr)
 	assert.Equal(t, "PAYOUT_ACCOUNT_DUPLICATE", domainErr.Code)
+	assert.ErrorIs(t, err, apperror.ErrAlreadyExists)
+	assert.NotContains(t, repo.byUser, uint(72), "the second user's row must not be stored")
 }
 
 func TestPayoutUsecase_Upsert_AllowsTheSameUserToResaveTheirAccount(t *testing.T) {
@@ -144,17 +147,87 @@ func TestPayoutUsecase_Upsert_PropagatesFingerprintLookupErrors(t *testing.T) {
 }
 
 func TestPayoutUsecase_Upsert_RejectsInvalidBankCodeAndAccountNumber(t *testing.T) {
-	uc := newTestPayoutUsecase(&fakePayoutAccountRepo{})
+	cases := []struct {
+		name string
+		req  dto.PayoutAccountRequest
+	}{
+		{name: "bank code too short", req: dto.PayoutAccountRequest{BankCode: "BC", BankName: "Bank", AccountHolderName: "Siti", AccountNumber: "1234567890"}},
+		{name: "account number not digits", req: dto.PayoutAccountRequest{BankCode: "BCAIDJA", BankName: "Bank", AccountHolderName: "Siti", AccountNumber: "12-34"}},
+		{name: "bank name empty", req: dto.PayoutAccountRequest{BankCode: "BCAIDJA", BankName: "   ", AccountHolderName: "Siti", AccountNumber: "1234567890"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakePayoutAccountRepo{}
+			uc := newTestPayoutUsecase(repo)
+
+			_, err := uc.Upsert(context.Background(), 71, tc.req)
+			require.Error(t, err)
+			var domainErr *apperror.DomainError
+			require.ErrorAs(t, err, &domainErr)
+			assert.Equal(t, "INVALID_PAYOUT_ACCOUNT", domainErr.Code)
+			assert.Empty(t, repo.byUser, "a rejected request must not reach the repository")
+		})
+	}
+}
+
+func TestPayoutRequest_Validate_BankNameLength(t *testing.T) {
+	const bankNameMessage = "bank_name must be 2 to 100 characters"
+	cases := []struct {
+		name     string
+		bankName string
+		wantErr  string
+	}{
+		{name: "empty is rejected", bankName: "", wantErr: bankNameMessage},
+		{name: "whitespace only is rejected", bankName: "   ", wantErr: bankNameMessage},
+		{name: "one character after trimming is rejected", bankName: "  B  ", wantErr: bankNameMessage},
+		{name: "two characters is accepted", bankName: "BR"},
+		{name: "100 characters is accepted", bankName: strings.Repeat("a", 100)},
+		{name: "101 characters is rejected", bankName: strings.Repeat("a", 101), wantErr: bankNameMessage},
+		{name: "100 multi-byte characters is accepted", bankName: strings.Repeat("é", 100)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := dto.PayoutAccountRequest{
+				BankCode: "BCAIDJA", BankName: tc.bankName, AccountHolderName: "Siti Rahayu", AccountNumber: "1234567890",
+			}
+			err := req.Validate()
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.EqualError(t, err, tc.wantErr)
+		})
+	}
+}
+
+func TestPayoutUsecase_Upsert_ResaveResetsStatusToUnverified(t *testing.T) {
+	repo := &fakePayoutAccountRepo{}
+	uc := newTestPayoutUsecase(repo)
 
 	_, err := uc.Upsert(context.Background(), 71, dto.PayoutAccountRequest{
-		BankCode: "BC", BankName: "Bank", AccountHolderName: "Siti", AccountNumber: "1234567890",
+		BankCode: "BCAIDJA", BankName: "Bank", AccountHolderName: "Siti Rahayu", AccountNumber: "1234567890",
 	})
-	assert.Error(t, err)
+	require.NoError(t, err)
+	repo.byUser[71].Status = entity.PayoutAccountStatusVerified
 
-	_, err = uc.Upsert(context.Background(), 71, dto.PayoutAccountRequest{
-		BankCode: "BCAIDJA", BankName: "Bank", AccountHolderName: "Siti", AccountNumber: "12-34",
+	account, err := uc.Upsert(context.Background(), 71, dto.PayoutAccountRequest{
+		BankCode: "BCAIDJA", BankName: "Bank", AccountHolderName: "Siti Rahayu", AccountNumber: "9876543210",
 	})
-	assert.Error(t, err)
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutAccountStatusUnverified, account.Status)
+	assert.Equal(t, "fp:9876543210", account.AccountFingerprint)
+}
+
+func TestPayoutUsecase_Upsert_StoresTheTrimmedHolderName(t *testing.T) {
+	uc := newTestPayoutUsecase(&fakePayoutAccountRepo{})
+
+	account, err := uc.Upsert(context.Background(), 71, dto.PayoutAccountRequest{
+		BankCode: "BCAIDJA", BankName: "  Bank Central Asia  ", AccountHolderName: "  Siti Rahayu  ", AccountNumber: "1234567890",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "enc:Siti Rahayu", account.AccountHolderNameEncrypted)
+	assert.Equal(t, "Bank Central Asia", account.BankName)
+	assert.False(t, account.NameMismatch, "the trimmed name must match the registered name")
 }
 
 func TestPayoutRequest_Validate_BankCodeLength(t *testing.T) {

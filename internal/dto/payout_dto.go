@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -31,6 +32,9 @@ func (r PayoutAccountRequest) Validate() error {
 	}
 	if len(strings.TrimSpace(r.AccountHolderName)) < 2 {
 		return errors.New("account_holder_name is required")
+	}
+	if n := utf8.RuneCountInString(strings.TrimSpace(r.BankName)); n < 2 || n > 100 {
+		return errors.New("bank_name must be 2 to 100 characters")
 	}
 	return nil
 }
