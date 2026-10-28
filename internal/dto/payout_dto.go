@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	bankCodePattern      = regexp.MustCompile(`^[A-Z0-9]{4}([A-Z0-9]{4})?$`)
+	bankCodePattern      = regexp.MustCompile(`^[A-Z0-9]{4,11}$`)
 	accountNumberPattern = regexp.MustCompile(`^[0-9]{6,32}$`)
 )
 
@@ -18,11 +18,13 @@ type PayoutAccountRequest struct {
 	AccountNumber     string `json:"account_number" validate:"required"`
 }
 
-// Validate enforces the shapes DOKU expects: a SWIFT/BIC bank code and a
-// numeric account number.
+// Validate catches typos in the submitted fields: a bank code with lowercase
+// letters, spaces, hyphens or the wrong length, and an account number that is
+// not 6 to 32 digits. DOKU's supported-bank list is the authority on which bank
+// codes are payable; this rule only rejects malformed input.
 func (r PayoutAccountRequest) Validate() error {
 	if !bankCodePattern.MatchString(r.BankCode) {
-		return errors.New("bank_code must be 4 or 8 uppercase letters or digits")
+		return errors.New("bank_code must be 4 to 11 uppercase letters or digits")
 	}
 	if !accountNumberPattern.MatchString(r.AccountNumber) {
 		return errors.New("account_number must be 6 to 32 digits")
