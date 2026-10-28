@@ -1,7 +1,9 @@
 package encryption
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +16,16 @@ func testKey() []byte {
 	key := make([]byte, 32)
 	for i := range key {
 		key[i] = byte(i + 1)
+	}
+	return key
+}
+
+// otherTestKey returns a second deterministic 32-byte vector, distinct from
+// testKey. It stands in for "the same secret under a different key".
+func otherTestKey() []byte {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(100 + i)
 	}
 	return key
 }
@@ -51,11 +63,7 @@ func TestCipher_WrongKeyCannotDecrypt(t *testing.T) {
 	encoded, err := c.Encrypt("secret")
 	require.NoError(t, err)
 
-	otherKey := make([]byte, 32)
-	for i := range otherKey {
-		otherKey[i] = byte(100 + i)
-	}
-	other, err := NewCipher(otherKey, "v1")
+	other, err := NewCipher(otherTestKey(), "v1")
 	require.NoError(t, err)
 
 	_, err = other.Decrypt(encoded)
@@ -92,6 +100,20 @@ func TestCipher_FingerprintIsStableAndOpaque(t *testing.T) {
 	assert.NotEqual(t, first, c.Fingerprint("9876543210"))
 	assert.NotContains(t, first, "1234567890")
 	assert.Len(t, first, 32)
+
+	// The digest must be keyed: the same value under another key yields
+	// another fingerprint. An unkeyed digest would be identical for both
+	// ciphers and would be brute-forceable offline, since account numbers
+	// have low entropy.
+	other, err := NewCipher(otherTestKey(), "v1")
+	require.NoError(t, err)
+	assert.NotEqual(t, first, other.Fingerprint("1234567890"),
+		"the fingerprint must depend on the key")
+
+	// It must also differ from an unkeyed SHA-256 of the same input.
+	unkeyed := sha256.Sum256([]byte("1234567890"))
+	assert.NotEqual(t, first, hex.EncodeToString(unkeyed[:])[:len(first)],
+		"the fingerprint must not be a plain SHA-256 of the plaintext")
 }
 
 func TestNewCipher_RejectsWrongKeySize(t *testing.T) {
