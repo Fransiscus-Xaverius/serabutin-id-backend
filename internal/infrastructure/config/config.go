@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/encryption"
 )
 
 type Config struct {
@@ -71,6 +73,11 @@ type Config struct {
 	DOKUPaymentMethods   []string
 	PaymentExpiryMinutes int
 	AppPublicURL         string
+
+	// PayoutEncryptionKey encrypts Mitra payout bank details (AES-256-GCM).
+	// It is required; the server refuses to start without it.
+	PayoutEncryptionKey   []byte
+	PayoutEncryptionKeyID string
 }
 
 const (
@@ -143,6 +150,9 @@ func Load() (*Config, error) {
 	viper.SetDefault("PAYMENT_EXPIRY_MINUTES", 60)
 	viper.SetDefault("APP_PUBLIC_URL", "http://localhost:5173")
 
+	viper.SetDefault("PAYOUT_ENCRYPTION_KEY", "")
+	viper.SetDefault("PAYOUT_ENCRYPTION_KEY_ID", "v1")
+
 	var cfg Config
 
 	err := viper.Unmarshal(&cfg)
@@ -214,7 +224,38 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	key, err := DecodePayoutEncryptionKey(viper.GetString("PAYOUT_ENCRYPTION_KEY"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.PayoutEncryptionKey = key
+	// PAYOUT_ENCRYPTION_KEY_ID defaults to "v1" here, at the config layer, so
+	// a deployment that never sets it still records which key encrypted a row.
+	cfg.PayoutEncryptionKeyID = strings.TrimSpace(viper.GetString("PAYOUT_ENCRYPTION_KEY_ID"))
+	if cfg.PayoutEncryptionKeyID == "" {
+		cfg.PayoutEncryptionKeyID = "v1"
+	}
+
 	return &cfg, nil
+}
+
+// DecodePayoutEncryptionKey decodes the base64 encryption key from the
+// environment. The key is required: there is no plaintext fallback, so a
+// missing or malformed key stops the server instead of silently storing
+// unprotected account numbers. Errors never include the key value.
+func DecodePayoutEncryptionKey(encoded string) ([]byte, error) {
+	trimmed := strings.TrimSpace(encoded)
+	if trimmed == "" {
+		return nil, fmt.Errorf("PAYOUT_ENCRYPTION_KEY is required (generate one with: openssl rand -base64 32)")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("PAYOUT_ENCRYPTION_KEY must be base64: %w", err)
+	}
+	if len(decoded) != encryption.KeySize {
+		return nil, fmt.Errorf("PAYOUT_ENCRYPTION_KEY must decode to %d bytes, got %d", encryption.KeySize, len(decoded))
+	}
+	return decoded, nil
 }
 
 // ParsePaymentChannels splits the comma separated channel list into slugs.

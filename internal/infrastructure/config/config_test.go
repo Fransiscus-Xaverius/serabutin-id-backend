@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"testing"
 
@@ -8,7 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// setTestPayoutKey satisfies the required payout encryption key for tests
+// that call Load(). It is an all-zero placeholder, never a real credential.
+func setTestPayoutKey(t *testing.T) {
+	t.Helper()
+	t.Setenv("PAYOUT_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+}
+
 func TestLoad_DefaultLoginLimiterValues(t *testing.T) {
+	setTestPayoutKey(t)
 	cfg, err := Load()
 	require.NoError(t, err)
 	assert.Equal(t, 5, cfg.LoginMaxAttempts)
@@ -22,6 +31,7 @@ func TestLoad_CustomLoginLimiterValues(t *testing.T) {
 		os.Unsetenv("LOGIN_MAX_ATTEMPTS")
 		os.Unsetenv("LOGIN_LOCKOUT_MINUTES")
 	})
+	setTestPayoutKey(t)
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -68,9 +78,11 @@ func TestLoad_RejectsDefaultSecretsInProduction(t *testing.T) {
 	t.Cleanup(func() {
 		os.Unsetenv("ENVIRONMENT")
 	})
+	setTestPayoutKey(t)
 
 	_, err := Load()
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JWT_SECRET")
 }
 
 func TestLoad_AcceptsStrongSecretsInProduction(t *testing.T) {
@@ -82,6 +94,7 @@ func TestLoad_AcceptsStrongSecretsInProduction(t *testing.T) {
 		os.Unsetenv("JWT_SECRET")
 		os.Unsetenv("JWT_REFRESH_SECRET")
 	})
+	setTestPayoutKey(t)
 
 	cfg, err := Load()
 	require.NoError(t, err)

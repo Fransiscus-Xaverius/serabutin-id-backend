@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -77,4 +78,27 @@ func TestValidatePaymentChannels_AcceptsKnownChannels(t *testing.T) {
 	err := ValidatePaymentChannels([]string{"qris", "ovo", "dana", "va_bca"})
 
 	assert.NoError(t, err)
+}
+
+func TestDecodePayoutEncryptionKey_RejectsMissingMalformedAndWrongLength(t *testing.T) {
+	_, err := DecodePayoutEncryptionKey("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PAYOUT_ENCRYPTION_KEY")
+
+	_, err = DecodePayoutEncryptionKey("not base64!!")
+	require.Error(t, err)
+
+	_, err = DecodePayoutEncryptionKey(base64.StdEncoding.EncodeToString(make([]byte, 16)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "32 bytes")
+}
+
+func TestDecodePayoutEncryptionKey_AcceptsThirtyTwoBytes(t *testing.T) {
+	key := make([]byte, 32)
+	key[0] = 9
+
+	decoded, err := DecodePayoutEncryptionKey(base64.StdEncoding.EncodeToString(key))
+	require.NoError(t, err)
+	assert.Len(t, decoded, 32)
+	assert.Equal(t, byte(9), decoded[0])
 }

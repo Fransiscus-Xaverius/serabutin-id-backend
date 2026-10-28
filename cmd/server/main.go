@@ -23,6 +23,7 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/config"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/database"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/doku"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/encryption"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/imaging"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/logger"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/payment"
@@ -42,6 +43,9 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
+	}
+	if len(cfg.PayoutEncryptionKey) != encryption.KeySize {
+		log.Fatal("PAYOUT_ENCRYPTION_KEY is missing or invalid; refusing to start")
 	}
 
 	logger.Init(cfg.Environment)
