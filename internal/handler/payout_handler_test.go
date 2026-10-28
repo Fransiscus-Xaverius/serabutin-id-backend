@@ -17,7 +17,6 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/dto"
-	"github.com/serabutin/serabutin-id-backend/internal/usecase"
 	"github.com/serabutin/serabutin-id-backend/pkg/requestctx"
 )
 
@@ -45,7 +44,6 @@ func TestPayoutHandler_Upsert_ReturnsMaskedAccount(t *testing.T) {
 	assert.NotContains(t, body, "1234567890")
 	assert.NotContains(t, body, "enc-secret")
 	assert.NotContains(t, body, "Siti Rahayu")
-	assert.False(t, uc.decryptCalled, "the handler must never decrypt the destination")
 }
 
 func TestPayoutHandler_Upsert_RejectsNonProvider(t *testing.T) {
@@ -105,11 +103,28 @@ func TestPayoutHandler_Upsert_EmptyBodyIs400AndSkipsUsecase(t *testing.T) {
 	assert.False(t, uc.upsertCalled, "an empty body must never reach the usecase")
 }
 
-func TestPayoutHandler_Upsert_UsecaseValidationErrorIs400(t *testing.T) {
+func TestPayoutHandler_Upsert_InvalidValueIs422(t *testing.T) {
+	invalidBody := `{"bank_code":"bca","bank_name":"Bank Central Asia","account_holder_name":"Siti Rahayu","account_number":"1234567890"}`
 	uc := &fakePayoutUsecase{err: apperror.NewDomainError(apperror.ErrValidation, "INVALID_PAYOUT_ACCOUNT", "bank_code must be 4 to 11 uppercase letters or digits")}
 	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 71)
 
-	req := httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(payoutRequestBody))
+	req := httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(invalidBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 422, resp.StatusCode)
+	assert.Equal(t, "INVALID_PAYOUT_ACCOUNT", errorCode(t, resp))
+	assert.True(t, uc.upsertCalled)
+}
+
+func TestPayoutHandler_Upsert_MalformedJSONIs400(t *testing.T) {
+	uc := &fakePayoutUsecase{}
+	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 71)
+
+	req := httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(`{"bank_code":`))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := app.Test(req)
@@ -117,8 +132,8 @@ func TestPayoutHandler_Upsert_UsecaseValidationErrorIs400(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, 400, resp.StatusCode)
-	assert.Equal(t, "INVALID_PAYOUT_ACCOUNT", errorCode(t, resp))
-	assert.True(t, uc.upsertCalled)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+	assert.False(t, uc.upsertCalled, "a malformed body must never reach the usecase")
 }
 
 func TestPayoutHandler_Upsert_DuplicateAccountIs409(t *testing.T) {
@@ -255,11 +270,10 @@ func errorCode(t *testing.T, resp *http.Response) string {
 }
 
 type fakePayoutUsecase struct {
-	account       *entity.PayoutAccount
-	err           error
-	upsertCalled  bool
-	getCalled     bool
-	decryptCalled bool
+	account      *entity.PayoutAccount
+	err          error
+	upsertCalled bool
+	getCalled    bool
 }
 
 func (f *fakePayoutUsecase) Upsert(ctx context.Context, userID uint, req dto.PayoutAccountRequest) (*entity.PayoutAccount, error) {
@@ -279,11 +293,6 @@ func (f *fakePayoutUsecase) result() (*entity.PayoutAccount, error) {
 		return &entity.PayoutAccount{}, nil
 	}
 	return f.account, f.err
-}
-
-func (f *fakePayoutUsecase) DecryptDestination(ctx context.Context, userID uint) (usecase.PayoutDestination, error) {
-	f.decryptCalled = true
-	return usecase.PayoutDestination{}, nil
 }
 
 type fakeProfileUsecase struct {

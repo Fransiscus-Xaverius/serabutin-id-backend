@@ -43,6 +43,12 @@ func FromDomainError(err error) *APIError {
 		if domainErr.Code == "UNKNOWN_CATEGORY" {
 			return NewAPIError(fiber.StatusUnprocessableEntity, domainErr.Code, domainErr.Message)
 		}
+		// A payout destination with an invalid bank code or account number
+		// maps to 422. A malformed request body stays 400, and the global
+		// ErrValidation mapping is unchanged for other endpoints.
+		if domainErr.Code == "INVALID_PAYOUT_ACCOUNT" {
+			return NewAPIError(fiber.StatusUnprocessableEntity, domainErr.Code, domainErr.Message)
+		}
 		// The admin chat-safety proxy reports a down/unconfigured chat
 		// backend with this code; it maps to 502 while keeping the code so
 		// operators can distinguish it from local 500s.

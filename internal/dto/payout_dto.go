@@ -30,8 +30,8 @@ func (r PayoutAccountRequest) Validate() error {
 	if !accountNumberPattern.MatchString(r.AccountNumber) {
 		return errors.New("account_number must be 6 to 32 digits")
 	}
-	if len(strings.TrimSpace(r.AccountHolderName)) < 2 {
-		return errors.New("account_holder_name is required")
+	if n := utf8.RuneCountInString(strings.TrimSpace(r.AccountHolderName)); n < 2 || n > 100 {
+		return errors.New("account_holder_name must be 2 to 100 characters")
 	}
 	if n := utf8.RuneCountInString(strings.TrimSpace(r.BankName)); n < 2 || n > 100 {
 		return errors.New("bank_name must be 2 to 100 characters")

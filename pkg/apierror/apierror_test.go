@@ -78,6 +78,25 @@ func TestFromDomainError_Validation_Returns400(t *testing.T) {
 	assert.Equal(t, "validation failed", apiErr.Message)
 }
 
+func TestFromDomainError_InvalidPayoutAccount_Returns422(t *testing.T) {
+	t.Parallel()
+
+	domainErr := apperror.NewDomainError(apperror.ErrValidation, "INVALID_PAYOUT_ACCOUNT", "bank_code must be 4 to 11 uppercase letters or digits")
+	apiErr := FromDomainError(domainErr)
+
+	assert.Equal(t, fiber.StatusUnprocessableEntity, apiErr.HTTPCode)
+	assert.Equal(t, "INVALID_PAYOUT_ACCOUNT", apiErr.Code)
+}
+
+func TestFromDomainError_GenericValidation_StaysAt400(t *testing.T) {
+	t.Parallel()
+
+	domainErr := apperror.NewDomainError(apperror.ErrValidation, "VALIDATION_ERROR", "invalid input")
+	apiErr := FromDomainError(domainErr)
+
+	assert.Equal(t, fiber.StatusBadRequest, apiErr.HTTPCode)
+}
+
 func TestFromDomainError_ModuleDisabled_Returns503(t *testing.T) {
 	t.Parallel()
 

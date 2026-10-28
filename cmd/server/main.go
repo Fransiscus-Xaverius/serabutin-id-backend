@@ -104,6 +104,12 @@ func main() {
 	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.PaymentModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}, &model.ReimbursementModel{}, &model.PayoutMarkModel{}, &model.KillSwitchModel{}, &model.PayoutAccountModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
+	// AutoMigrate never turns an existing index unique, so databases created by
+	// the earlier non-unique model are rebuilt here. Boot refuses to continue
+	// while duplicate bank accounts exist.
+	if err := database.EnsurePayoutFingerprintIndexUnique(db); err != nil {
+		logger.Log.Fatal().Err(err).Msg("refusing to start: payout account fingerprint index")
+	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
 	// composite booking+author index).
 	if db.Migrator().HasIndex(&model.ReviewModel{}, "idx_reviews_booking_id") {

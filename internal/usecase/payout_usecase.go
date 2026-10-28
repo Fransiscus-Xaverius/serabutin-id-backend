@@ -25,11 +25,12 @@ type UserNameLookup interface {
 	FindByID(ctx context.Context, id uint) (*entity.User, error)
 }
 
-// PayoutAccountService is what the payout HTTP handler depends on.
+// PayoutAccountService is what the payout HTTP handler depends on. It exposes
+// no decryption: plaintext is reachable only through the concrete
+// *PayoutUsecase, which the future transfer path holds.
 type PayoutAccountService interface {
 	Upsert(ctx context.Context, userID uint, req dto.PayoutAccountRequest) (*entity.PayoutAccount, error)
 	Get(ctx context.Context, userID uint) (*entity.PayoutAccount, error)
-	DecryptDestination(ctx context.Context, userID uint) (PayoutDestination, error)
 }
 
 // PayoutDestination is the decrypted form, used only when paying out.

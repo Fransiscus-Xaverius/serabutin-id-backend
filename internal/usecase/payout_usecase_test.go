@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -198,6 +199,49 @@ func TestPayoutRequest_Validate_BankNameLength(t *testing.T) {
 			assert.EqualError(t, err, tc.wantErr)
 		})
 	}
+}
+
+func TestPayoutRequest_Validate_HolderNameLength(t *testing.T) {
+	const holderNameMessage = "account_holder_name must be 2 to 100 characters"
+	cases := []struct {
+		name       string
+		holderName string
+		wantErr    string
+	}{
+		{name: "empty is rejected", holderName: "", wantErr: holderNameMessage},
+		{name: "one character after trimming is rejected", holderName: "  S  ", wantErr: holderNameMessage},
+		{name: "exactly 2 characters is accepted", holderName: "Si"},
+		{name: "exactly 100 characters is accepted", holderName: strings.Repeat("a", 100)},
+		{name: "101 characters is rejected", holderName: strings.Repeat("a", 101), wantErr: holderNameMessage},
+		{name: "100 multi-byte characters is accepted", holderName: strings.Repeat("é", 100)},
+		{name: "100 CJK characters is accepted", holderName: strings.Repeat("李", 100)},
+		{name: "101 multi-byte characters is rejected", holderName: strings.Repeat("é", 101), wantErr: holderNameMessage},
+		{name: "100 characters with surrounding spaces is accepted after trimming", holderName: "  " + strings.Repeat("a", 100) + "  "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := dto.PayoutAccountRequest{
+				BankCode: "BCAIDJA", BankName: "Bank", AccountHolderName: tc.holderName, AccountNumber: "1234567890",
+			}
+			err := req.Validate()
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.EqualError(t, err, tc.wantErr)
+		})
+	}
+}
+
+func TestPayoutAccountService_ExposesNoDecryption(t *testing.T) {
+	var _ PayoutAccountService = (*PayoutUsecase)(nil)
+
+	iface := reflect.TypeOf((*PayoutAccountService)(nil)).Elem()
+	var methods []string
+	for i := 0; i < iface.NumMethod(); i++ {
+		methods = append(methods, iface.Method(i).Name)
+	}
+	assert.ElementsMatch(t, []string{"Upsert", "Get"}, methods, "the handler-facing interface must not expose decryption")
 }
 
 func TestPayoutUsecase_Upsert_ResaveResetsStatusToUnverified(t *testing.T) {
