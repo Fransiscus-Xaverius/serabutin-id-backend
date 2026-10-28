@@ -1727,7 +1727,7 @@ and the schemas:
         bank_code:
           type: string
           description: SWIFT/BIC code of the bank.
-          pattern: '^[A-Z0-9]{4}([A-Z0-9]{4})?$'
+          pattern: '^[A-Z0-9]{4,11}$'
           example: BCAIDJA
         bank_name:
           type: string
