@@ -25,6 +25,13 @@ type UserNameLookup interface {
 	FindByID(ctx context.Context, id uint) (*entity.User, error)
 }
 
+// PayoutAccountService is what the payout HTTP handler depends on.
+type PayoutAccountService interface {
+	Upsert(ctx context.Context, userID uint, req dto.PayoutAccountRequest) (*entity.PayoutAccount, error)
+	Get(ctx context.Context, userID uint) (*entity.PayoutAccount, error)
+	DecryptDestination(ctx context.Context, userID uint) (PayoutDestination, error)
+}
+
 // PayoutDestination is the decrypted form, used only when paying out.
 type PayoutDestination struct {
 	BankCode          string

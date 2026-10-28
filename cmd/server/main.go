@@ -23,6 +23,7 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/config"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/database"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/doku"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/encryption"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/imaging"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/logger"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/payment"
@@ -47,6 +48,10 @@ func main() {
 
 	if err := config.RequirePayoutEncryptionKey(cfg); err != nil {
 		logger.Log.Fatal().Err(err).Msg("refusing to start")
+	}
+	payoutCipher, err := encryption.NewCipher(cfg.PayoutEncryptionKey, cfg.PayoutEncryptionKeyID)
+	if err != nil {
+		logger.Log.Fatal().Err(err).Msg("failed to initialise the payout encryption cipher")
 	}
 
 	logger.Log.Info().
@@ -132,6 +137,9 @@ func main() {
 	bidHandler := handler.NewBidHandler(bidUsecase, profileUsecase, serviceUsecase)
 	reviewUsecase := usecase.NewReviewUsecase(reviewRepo, bookingRepo, userRepo)
 	reviewHandler := handler.NewReviewHandler(reviewUsecase, profileUsecase)
+	payoutRepo := gormrepo.NewPayoutAccountRepository(db)
+	payoutUsecase := usecase.NewPayoutUsecase(payoutRepo, userRepo, payoutCipher, cfg.PayoutEncryptionKeyID)
+	payoutHandler := handler.NewPayoutHandler(payoutUsecase, profileUsecase)
 	introspectUsecase := usecase.NewIntrospectUsecase(tokenService, tokenRepo, userRepo)
 	introspectHandler := handler.NewIntrospectHandler(introspectUsecase)
 	userUsecase := usecase.NewUserUsecase(userRepo)
@@ -332,6 +340,8 @@ func main() {
 	protected.Patch("/bookings/:id/complete", bookingHandler.Complete)
 	protected.Patch("/bookings/:id/cancel", bookingHandler.Cancel)
 	protected.Post("/reviews", reviewHandler.Create)
+	protected.Put("/payout-account", payoutHandler.Upsert)
+	protected.Get("/payout-account", payoutHandler.Get)
 	protected.Post("/upload", uploadHandler.Upload)
 	protected.Get("/notifications", notificationHandler.List)
 	protected.Get("/notifications/stream", notificationHandler.Stream)
