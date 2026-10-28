@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -61,6 +63,94 @@ func TestPayoutHandler_Upsert_RejectsNonProvider(t *testing.T) {
 	assert.False(t, uc.upsertCalled, "a customer must not be able to create a payout destination")
 }
 
+func TestPayoutHandler_Upsert_StructValidationIs400AndSkipsUsecase(t *testing.T) {
+	cases := map[string]string{
+		"missing bank_code": `{"bank_name":"Bank Central Asia","account_holder_name":"Siti Rahayu","account_number":"1234567890"}`,
+		"empty object":      `{}`,
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			uc := &fakePayoutUsecase{}
+			app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 71)
+
+			req := httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(payload))
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, 400, resp.StatusCode)
+			assert.Equal(t, "VALIDATION_ERROR", errorCode(t, resp))
+			assert.False(t, uc.upsertCalled, "an invalid body must never reach the usecase")
+		})
+	}
+}
+
+// A zero-byte body fails at bind, before validation, so it is a 400 with
+// INVALID_REQUEST rather than VALIDATION_ERROR. It still must not reach the usecase.
+func TestPayoutHandler_Upsert_EmptyBodyIs400AndSkipsUsecase(t *testing.T) {
+	uc := &fakePayoutUsecase{}
+	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 71)
+
+	req := httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+	assert.False(t, uc.upsertCalled, "an empty body must never reach the usecase")
+}
+
+func TestPayoutHandler_Upsert_UsecaseValidationErrorIs400(t *testing.T) {
+	uc := &fakePayoutUsecase{err: apperror.NewDomainError(apperror.ErrValidation, "INVALID_PAYOUT_ACCOUNT", "bank_code must be 4 to 11 uppercase letters or digits")}
+	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 71)
+
+	req := httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(payoutRequestBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+	assert.Equal(t, "INVALID_PAYOUT_ACCOUNT", errorCode(t, resp))
+	assert.True(t, uc.upsertCalled)
+}
+
+func TestPayoutHandler_Upsert_DuplicateAccountIs409(t *testing.T) {
+	uc := &fakePayoutUsecase{err: apperror.NewDomainError(apperror.ErrAlreadyExists, "PAYOUT_ACCOUNT_DUPLICATE", "this bank account is already used by another mitra")}
+	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 71)
+
+	req := httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(payoutRequestBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 409, resp.StatusCode)
+	assert.Equal(t, "PAYOUT_ACCOUNT_DUPLICATE", errorCode(t, resp))
+}
+
+func TestPayoutHandler_Upsert_RequiresSession(t *testing.T) {
+	uc := &fakePayoutUsecase{}
+	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 0)
+
+	req := httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(payoutRequestBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 401, resp.StatusCode)
+	assert.False(t, uc.upsertCalled)
+}
+
 func TestPayoutHandler_Get_RejectsNonProvider(t *testing.T) {
 	uc := &fakePayoutUsecase{account: &entity.PayoutAccount{UserID: 71, AccountLast4: "7890"}}
 	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "customer"}, 71)
@@ -70,6 +160,7 @@ func TestPayoutHandler_Get_RejectsNonProvider(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, 403, resp.StatusCode)
+	assert.False(t, uc.getCalled, "a customer must not be able to read a payout destination")
 }
 
 func TestPayoutHandler_Get_ReturnsMaskedAccount(t *testing.T) {
@@ -101,6 +192,7 @@ func TestPayoutHandler_Get_NotFoundIs404(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, 404, resp.StatusCode)
+	assert.Equal(t, "PAYOUT_ACCOUNT_NOT_FOUND", errorCode(t, resp))
 }
 
 func TestPayoutHandler_RequiresSession(t *testing.T) {
@@ -112,6 +204,7 @@ func TestPayoutHandler_RequiresSession(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, 401, resp.StatusCode)
+	assert.False(t, uc.getCalled)
 }
 
 func TestPayoutHandler_ProfileLookupFailureIs401(t *testing.T) {
@@ -123,6 +216,19 @@ func TestPayoutHandler_ProfileLookupFailureIs401(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, 401, resp.StatusCode)
+	assert.False(t, uc.getCalled)
+}
+
+func TestPayoutHandler_MissingProfileIs401(t *testing.T) {
+	uc := &fakePayoutUsecase{}
+	app := newPayoutTestApp(uc, &fakeProfileUsecase{nilProfile: true}, 71)
+
+	resp, err := app.Test(httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(payoutRequestBody)))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 401, resp.StatusCode)
+	assert.False(t, uc.upsertCalled)
 }
 
 func newPayoutTestApp(uc *fakePayoutUsecase, profiles *fakeProfileUsecase, userID uint) *fiber.App {
@@ -137,19 +243,41 @@ func newPayoutTestApp(uc *fakePayoutUsecase, profiles *fakeProfileUsecase, userI
 	return app
 }
 
+func errorCode(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	var body struct {
+		Code string `json:"code"`
+	}
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &body), "body: %s", raw)
+	return body.Code
+}
+
 type fakePayoutUsecase struct {
 	account       *entity.PayoutAccount
 	err           error
 	upsertCalled  bool
+	getCalled     bool
 	decryptCalled bool
 }
 
 func (f *fakePayoutUsecase) Upsert(ctx context.Context, userID uint, req dto.PayoutAccountRequest) (*entity.PayoutAccount, error) {
 	f.upsertCalled = true
-	return f.account, f.err
+	return f.result()
 }
 
 func (f *fakePayoutUsecase) Get(ctx context.Context, userID uint) (*entity.PayoutAccount, error) {
+	f.getCalled = true
+	return f.result()
+}
+
+// result returns an empty account when none is configured, so a test that
+// reaches the usecase by mistake fails on its assertions, not on a nil panic.
+func (f *fakePayoutUsecase) result() (*entity.PayoutAccount, error) {
+	if f.account == nil && f.err == nil {
+		return &entity.PayoutAccount{}, nil
+	}
 	return f.account, f.err
 }
 
@@ -159,13 +287,17 @@ func (f *fakePayoutUsecase) DecryptDestination(ctx context.Context, userID uint)
 }
 
 type fakeProfileUsecase struct {
-	role string
-	err  error
+	role       string
+	err        error
+	nilProfile bool
 }
 
 func (f *fakeProfileUsecase) GetProfile(ctx context.Context, userID uint) (*entity.User, error) {
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.nilProfile {
+		return nil, nil
 	}
 	return &entity.User{ID: userID, Role: f.role}, nil
 }
