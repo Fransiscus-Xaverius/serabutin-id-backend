@@ -102,3 +102,43 @@ func TestDecodePayoutEncryptionKey_AcceptsThirtyTwoBytes(t *testing.T) {
 	assert.Len(t, decoded, 32)
 	assert.Equal(t, byte(9), decoded[0])
 }
+
+func TestLoad_AllowsAbsentPayoutKeyButRequireRejectsIt(t *testing.T) {
+	t.Setenv("PAYOUT_ENCRYPTION_KEY", "")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.PayoutEncryptionKey)
+
+	err = RequirePayoutEncryptionKey(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PAYOUT_ENCRYPTION_KEY")
+	assert.Contains(t, err.Error(), "openssl rand -base64 32")
+}
+
+func TestLoad_RejectsMalformedPayoutKey(t *testing.T) {
+	t.Setenv("PAYOUT_ENCRYPTION_KEY", "not base64!!")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PAYOUT_ENCRYPTION_KEY")
+
+	t.Setenv("PAYOUT_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 16)))
+
+	_, err = Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "32 bytes")
+}
+
+func TestRequirePayoutEncryptionKey_AcceptsValidKeyAndNeverEchoesIt(t *testing.T) {
+	require.Error(t, RequirePayoutEncryptionKey(&Config{}))
+
+	key := make([]byte, 32)
+	key[0] = 7
+	require.NoError(t, RequirePayoutEncryptionKey(&Config{PayoutEncryptionKey: key}))
+
+	short := &Config{PayoutEncryptionKey: make([]byte, 16)}
+	err := RequirePayoutEncryptionKey(short)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), base64.StdEncoding.EncodeToString(short.PayoutEncryptionKey))
+}

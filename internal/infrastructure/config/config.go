@@ -224,11 +224,16 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	key, err := DecodePayoutEncryptionKey(viper.GetString("PAYOUT_ENCRYPTION_KEY"))
-	if err != nil {
-		return nil, err
+	// An absent key is not fatal here: ops tools such as the seeder load the
+	// config without touching payout data. The server enforces presence with
+	// RequirePayoutEncryptionKey. A malformed key always fails.
+	if rawKey := viper.GetString("PAYOUT_ENCRYPTION_KEY"); strings.TrimSpace(rawKey) != "" {
+		key, err := DecodePayoutEncryptionKey(rawKey)
+		if err != nil {
+			return nil, err
+		}
+		cfg.PayoutEncryptionKey = key
 	}
-	cfg.PayoutEncryptionKey = key
 	// PAYOUT_ENCRYPTION_KEY_ID defaults to "v1" here, at the config layer, so
 	// a deployment that never sets it still records which key encrypted a row.
 	cfg.PayoutEncryptionKeyID = strings.TrimSpace(viper.GetString("PAYOUT_ENCRYPTION_KEY_ID"))
@@ -239,10 +244,20 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// RequirePayoutEncryptionKey enforces that the loaded config carries a usable
+// payout encryption key. The server calls it at startup: there is no
+// plaintext fallback, so a missing key stops the server instead of silently
+// storing unprotected account numbers. The error never includes the value.
+func RequirePayoutEncryptionKey(cfg *Config) error {
+	if len(cfg.PayoutEncryptionKey) != encryption.KeySize {
+		return fmt.Errorf("PAYOUT_ENCRYPTION_KEY is missing or invalid: it must be %d base64-encoded bytes (generate one with: openssl rand -base64 32)", encryption.KeySize)
+	}
+	return nil
+}
+
 // DecodePayoutEncryptionKey decodes the base64 encryption key from the
-// environment. The key is required: there is no plaintext fallback, so a
-// missing or malformed key stops the server instead of silently storing
-// unprotected account numbers. Errors never include the key value.
+// environment. It is strict: an empty value is an error. Errors never include
+// the key value.
 func DecodePayoutEncryptionKey(encoded string) ([]byte, error) {
 	trimmed := strings.TrimSpace(encoded)
 	if trimmed == "" {
