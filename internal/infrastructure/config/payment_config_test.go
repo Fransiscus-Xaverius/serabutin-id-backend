@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/base64"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -134,11 +135,58 @@ func TestRequirePayoutEncryptionKey_AcceptsValidKeyAndNeverEchoesIt(t *testing.T
 	require.Error(t, RequirePayoutEncryptionKey(&Config{}))
 
 	key := make([]byte, 32)
-	key[0] = 7
+	for i := range key {
+		key[i] = byte(7 + i*13)
+	}
 	require.NoError(t, RequirePayoutEncryptionKey(&Config{PayoutEncryptionKey: key}))
 
-	short := &Config{PayoutEncryptionKey: make([]byte, 16)}
-	err := RequirePayoutEncryptionKey(short)
+	short := make([]byte, 16)
+	for i := range short {
+		short[i] = byte(201 + i*7)
+	}
+	err := RequirePayoutEncryptionKey(&Config{PayoutEncryptionKey: short})
 	require.Error(t, err)
-	assert.NotContains(t, err.Error(), base64.StdEncoding.EncodeToString(short.PayoutEncryptionKey))
+	assert.NotContains(t, err.Error(), base64.StdEncoding.EncodeToString(short))
+	assert.NotContains(t, err.Error(), string(short))
 }
+
+func TestLoad_PayoutKeyIDDefaultsToV1WhenUnsetOrBlank(t *testing.T) {
+	setTestPayoutKey(t)
+
+	cases := []struct {
+		name  string
+		value *string
+		want  string
+	}{
+		{"unset", nil, "v1"},
+		{"empty", strPtr(""), "v1"},
+		{"whitespace only", strPtr("  "), "v1"},
+		{"explicit v2 is kept", strPtr("v2"), "v2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.value == nil {
+				t.Setenv("PAYOUT_ENCRYPTION_KEY_ID", "")
+				require.NoError(t, os.Unsetenv("PAYOUT_ENCRYPTION_KEY_ID"))
+			} else {
+				t.Setenv("PAYOUT_ENCRYPTION_KEY_ID", *tc.value)
+			}
+
+			cfg, err := Load()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.PayoutEncryptionKeyID)
+		})
+	}
+}
+
+func TestLoad_WhitespaceOnlyPayoutKeyIsAbsentAndStartupCheckRejectsIt(t *testing.T) {
+	t.Setenv("PAYOUT_ENCRYPTION_KEY", "   ")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.PayoutEncryptionKey)
+
+	require.Error(t, RequirePayoutEncryptionKey(cfg))
+}
+
+func strPtr(s string) *string { return &s }

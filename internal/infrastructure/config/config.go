@@ -226,7 +226,9 @@ func Load() (*Config, error) {
 
 	// An absent key is not fatal here: ops tools such as the seeder load the
 	// config without touching payout data. The server enforces presence with
-	// RequirePayoutEncryptionKey. A malformed key always fails.
+	// RequirePayoutEncryptionKey. A blank or whitespace-only value counts as
+	// absent: it carries no key material, so it is not "malformed". Any other
+	// value that is present must decode, or Load fails.
 	if rawKey := viper.GetString("PAYOUT_ENCRYPTION_KEY"); strings.TrimSpace(rawKey) != "" {
 		key, err := DecodePayoutEncryptionKey(rawKey)
 		if err != nil {
