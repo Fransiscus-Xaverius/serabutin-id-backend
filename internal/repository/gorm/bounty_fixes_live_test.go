@@ -48,7 +48,7 @@ func setupBountyLiveDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.BookingModel{}, &model.BookingAddOnModel{}, &model.PaymentModel{}, &model.CancellationModel{},
-		&model.ServiceModel{}, &model.BroadcastModel{},
+		&model.ServiceModel{}, &model.BroadcastModel{}, &model.PayoutAccountModel{},
 	))
 	return db
 }
