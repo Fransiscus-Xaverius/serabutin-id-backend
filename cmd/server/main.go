@@ -339,6 +339,7 @@ func main() {
 	protected.Patch("/bids/:id/reject", bidHandler.Reject)
 	protected.Get("/bookings/:id", bookingHandler.Get)
 	protected.Get("/bookings/:id/payment", paymentHandler.GetPayment)
+	protected.Post("/bookings/:id/payment/retry", middleware.RequireModule(killSwitchUC, "bookings"), bookingHandler.RetryPayment)
 	protected.Get("/my-bookings", bookingHandler.GetMyBookings)
 	protected.Patch("/bookings/:id/accept", bookingHandler.Accept)
 	protected.Patch("/bookings/:id/reject", bookingHandler.Reject)

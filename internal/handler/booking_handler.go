@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
@@ -50,13 +51,46 @@ func (h *BookingHandler) Create(c fiber.Ctx) error {
 		return apierror.GlobalErrorHandler(c, apiErr)
 	}
 
-	booking, err := h.bookingUsecase.CreateBooking(c.Context(), userID, req)
+	booking, err := h.bookingUsecase.CreateBooking(c.Context(), userID, req, idempotencyKey(c))
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
 	resp := h.toBookingResponse(c.Context(), booking)
 	return response.Success(c, fiber.StatusCreated, resp)
+}
+
+// RetryPayment sends a pending checkout again without creating a booking.
+func (h *BookingHandler) RetryPayment(c fiber.Ctx) error {
+	userID := requestctx.GetUserID(c)
+	if userID == 0 {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "UNAUTHORIZED", "unauthorized"))
+	}
+
+	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_ID", "invalid booking ID"))
+	}
+
+	booking, err := h.bookingUsecase.RetryPayment(c.Context(), userID, uint(id))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+
+	resp := h.toBookingResponse(c.Context(), booking)
+	return response.Success(c, fiber.StatusOK, resp)
+}
+
+// maxIdempotencyKeyLength bounds the header. A longer key is ignored rather
+// than rejected, so the request still goes through without the guarantee.
+const maxIdempotencyKeyLength = 64
+
+func idempotencyKey(c fiber.Ctx) string {
+	key := strings.TrimSpace(c.Get("Idempotency-Key"))
+	if len(key) > maxIdempotencyKeyLength {
+		return ""
+	}
+	return key
 }
 
 func (h *BookingHandler) Get(c fiber.Ctx) error {

@@ -40,17 +40,27 @@ func (f *prepayFakeServiceRepo) ListForAdmin(ctx context.Context, filter reposit
 }
 
 type prepayFakeInitiator struct {
-	created []*entity.Booking
-	channel string
-	payment *entity.Payment
-	err     error
-	enabled []string
+	created      []*entity.Booking
+	channel      string
+	payment      *entity.Payment
+	err          error
+	enabled      []string
+	retried      []uint
+	retryChannel string
+	retryPayment *entity.Payment
+	retryErr     error
 }
 
 func (f *prepayFakeInitiator) CreateCheckout(ctx context.Context, booking *entity.Booking, channel string) (*entity.Payment, error) {
 	f.created = append(f.created, booking)
 	f.channel = channel
 	return f.payment, f.err
+}
+
+func (f *prepayFakeInitiator) RetryCheckout(ctx context.Context, bookingID uint, channel string) (*entity.Payment, error) {
+	f.retried = append(f.retried, bookingID)
+	f.retryChannel = channel
+	return f.retryPayment, f.retryErr
 }
 
 func (f *prepayFakeInitiator) IsPrepaidChannel(channel string) bool {
@@ -111,7 +121,7 @@ func prepayRequest(method string) dto.CreateBookingRequest {
 func TestCreateBooking_QRIS_CreatesPendingPaymentBookingAndCheckout(t *testing.T) {
 	uc, _, initiator, _, notifier := newPrepayTestUC(t)
 
-	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS))
+	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS), "")
 
 	require.NoError(t, err)
 	assert.Equal(t, entity.BookingStatusPendingPayment, booking.Status)
@@ -136,7 +146,7 @@ func TestCreateBooking_QRIS_CreatesPendingPaymentBookingAndCheckout(t *testing.T
 func TestCreateBooking_LegacyMethod_KeepsPendingAndCreatesNoPayment(t *testing.T) {
 	uc, _, initiator, _, _ := newPrepayTestUC(t)
 
-	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest("cash_on_service"))
+	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest("cash_on_service"), "")
 
 	require.Error(t, err, "a method that is not an enabled prepayment channel must be refused")
 	var domainErr *apperror.DomainError
@@ -150,7 +160,7 @@ func TestCreateBooking_ChannelThatIsNotEnabled_IsRefused(t *testing.T) {
 	uc, _, initiator, _, _ := newPrepayTestUC(t)
 	initiator.enabled = []string{"qris"}
 
-	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest("ovo"))
+	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest("ovo"), "")
 
 	require.Error(t, err)
 	var domainErr *apperror.DomainError
@@ -164,7 +174,7 @@ func TestCreateBooking_EnabledChannel_IsPassedToTheCheckout(t *testing.T) {
 	uc, _, initiator, _, _ := newPrepayTestUC(t)
 	initiator.enabled = []string{"qris", "ovo"}
 
-	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest("ovo"))
+	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest("ovo"), "")
 
 	require.NoError(t, err)
 	assert.Equal(t, entity.BookingStatusPendingPayment, booking.Status)
@@ -177,12 +187,129 @@ func TestCreateBooking_CheckoutFailure_StillReturnsBookingWithFailedPayment(t *t
 	initiator.err = assert.AnError
 	initiator.payment = &entity.Payment{ID: 1, Status: entity.PaymentStatusFailed, LastError: "gateway down"}
 
-	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS))
+	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS), "")
 
 	require.NoError(t, err, "the booking itself exists; the payment failure is reported through the payment object")
 	assert.Equal(t, entity.BookingStatusPendingPayment, booking.Status)
 	require.NotNil(t, booking.Payment)
 	assert.Equal(t, entity.PaymentStatusFailed, booking.Payment.Status)
+}
+
+func requireIdempotencyKeyReused(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "IDEMPOTENCY_KEY_REUSED", domainErr.Code)
+}
+
+func TestCreateBooking_SameIdempotencyKey_ReturnsTheSameBooking(t *testing.T) {
+	uc, bookingRepo, initiator, _, _ := newPrepayTestUC(t)
+
+	first, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS), "abc")
+	require.NoError(t, err)
+	second, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS), "abc")
+	require.NoError(t, err)
+
+	assert.Equal(t, first.ID, second.ID, "a repeated submit must answer with the booking it created")
+	assert.Len(t, bookingRepo.bookings, 1, "a repeated submit must not create a second booking")
+	assert.Len(t, initiator.created, 1, "a repeated submit must not start a second checkout")
+}
+
+func TestCreateBooking_KeyIsStoredWithItsFingerprint(t *testing.T) {
+	uc, bookingRepo, _, _, _ := newPrepayTestUC(t)
+
+	booking, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS), "abc")
+	require.NoError(t, err)
+
+	stored := bookingRepo.bookings[booking.ID]
+	assert.Equal(t, "abc", stored.IdempotencyKey)
+	assert.NotEmpty(t, stored.RequestFingerprint)
+	assert.NotEqual(t, "abc", stored.RequestFingerprint, "the fingerprint is a digest, not the key")
+}
+
+func TestCreateBooking_KeyReusedForAnotherRequest_IsRejected(t *testing.T) {
+	uc, bookingRepo, _, _, _ := newPrepayTestUC(t)
+	_, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS), "abc")
+	require.NoError(t, err)
+
+	other := prepayRequest(entity.PaymentChannelQRIS)
+	other.ServiceID = 6
+	booking, err := uc.CreateBooking(context.Background(), 10, other, "abc")
+
+	requireIdempotencyKeyReused(t, err)
+	assert.Nil(t, booking)
+	assert.Len(t, bookingRepo.bookings, 1)
+}
+
+func TestCreateBooking_KeyOfAnotherCustomer_IsRejectedWithoutLeakingTheBooking(t *testing.T) {
+	uc, bookingRepo, _, _, _ := newPrepayTestUC(t)
+	_, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS), "abc")
+	require.NoError(t, err)
+
+	booking, err := uc.CreateBooking(context.Background(), 11, prepayRequest(entity.PaymentChannelQRIS), "abc")
+
+	requireIdempotencyKeyReused(t, err)
+	assert.Nil(t, booking, "another customer's booking must not be returned")
+	assert.Len(t, bookingRepo.bookings, 1)
+}
+
+func TestCreateBooking_WithoutKey_EachSubmitCreatesABooking(t *testing.T) {
+	uc, bookingRepo, _, _, _ := newPrepayTestUC(t)
+
+	first, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS), "")
+	require.NoError(t, err)
+	second, err := uc.CreateBooking(context.Background(), 10, prepayRequest(entity.PaymentChannelQRIS), "")
+	require.NoError(t, err)
+
+	assert.NotEqual(t, first.ID, second.ID)
+	assert.Len(t, bookingRepo.bookings, 2)
+	assert.Empty(t, bookingRepo.bookings[first.ID].IdempotencyKey, "no header means no stored key")
+}
+
+func TestRetryPayment_RetriesTheCheckoutWithTheBookingsChannel(t *testing.T) {
+	uc, bookingRepo, initiator, _, _ := newPrepayTestUC(t)
+	initiator.retryPayment = &entity.Payment{ID: 1, Status: entity.PaymentStatusPending, PaymentURL: "https://pay.example/1"}
+	bookingRepo.bookings[1] = &entity.Booking{
+		ID: 1, CustomerID: 10, ProviderID: 20,
+		Status:        entity.BookingStatusPendingPayment,
+		PaymentMethod: "ovo",
+	}
+
+	booking, err := uc.RetryPayment(context.Background(), 10, 1)
+
+	require.NoError(t, err)
+	assert.Equal(t, []uint{1}, initiator.retried)
+	assert.Equal(t, "ovo", initiator.retryChannel)
+	require.NotNil(t, booking.Payment)
+	assert.Equal(t, "https://pay.example/1", booking.Payment.PaymentURL)
+	assert.Len(t, bookingRepo.bookings, 1, "a retry never creates a booking")
+}
+
+func TestRetryPayment_AnotherCustomer_IsForbidden(t *testing.T) {
+	uc, bookingRepo, initiator, _, _ := newPrepayTestUC(t)
+	bookingRepo.bookings[1] = &entity.Booking{ID: 1, CustomerID: 10, ProviderID: 20, Status: entity.BookingStatusPendingPayment}
+
+	_, err := uc.RetryPayment(context.Background(), 11, 1)
+
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "FORBIDDEN", domainErr.Code)
+	assert.Empty(t, initiator.retried)
+}
+
+func TestRetryPayment_BookingNotAwaitingPayment_IsRefused(t *testing.T) {
+	uc, bookingRepo, initiator, _, _ := newPrepayTestUC(t)
+	bookingRepo.bookings[1] = &entity.Booking{ID: 1, CustomerID: 10, ProviderID: 20, Status: entity.BookingStatusPending}
+
+	_, err := uc.RetryPayment(context.Background(), 10, 1)
+
+	require.Error(t, err)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "INVALID_TRANSITION", domainErr.Code)
+	assert.Empty(t, initiator.retried, "a paid or cancelled booking must not be charged again")
 }
 
 func TestAcceptBooking_UnpaidBooking_IsRejected(t *testing.T) {

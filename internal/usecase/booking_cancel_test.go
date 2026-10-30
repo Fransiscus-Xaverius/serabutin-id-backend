@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 )
 
@@ -14,7 +15,17 @@ type cancelFakeBookingRepo struct {
 }
 
 func (f *cancelFakeBookingRepo) Create(ctx context.Context, b *entity.Booking) error {
+	b.ID = uint(len(f.bookings) + 1)
+	f.bookings[b.ID] = b
 	return nil
+}
+func (f *cancelFakeBookingRepo) FindByIdempotencyKey(ctx context.Context, key string) (*entity.Booking, error) {
+	for _, b := range f.bookings {
+		if b.IdempotencyKey == key {
+			return b, nil
+		}
+	}
+	return nil, apperror.NewDomainError(apperror.ErrBookingNotFound, "BOOKING_NOT_FOUND", "booking not found")
 }
 func (f *cancelFakeBookingRepo) FindByID(ctx context.Context, id uint) (*entity.Booking, error) {
 	return f.bookings[id], nil

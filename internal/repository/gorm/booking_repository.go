@@ -57,6 +57,26 @@ func (r *BookingRepository) FindByID(ctx context.Context, id uint) (*entity.Book
 	return r.toEntity(&m), nil
 }
 
+// FindByIdempotencyKey returns the booking that was created with the key. A
+// key that no booking carries answers BOOKING_NOT_FOUND.
+func (r *BookingRepository) FindByIdempotencyKey(ctx context.Context, key string) (*entity.Booking, error) {
+	var m model.BookingModel
+
+	err := r.db.WithContext(ctx).
+		Preload("BookingAddOns").
+		Preload("Payment").
+		Where("idempotency_key = ?", key).
+		First(&m).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, apperror.NewDomainError(apperror.ErrBookingNotFound, "BOOKING_NOT_FOUND", "booking not found")
+		}
+		return nil, apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+	}
+
+	return r.toEntity(&m), nil
+}
+
 func (r *BookingRepository) UpdateStatus(ctx context.Context, id uint, status string) error {
 	result := r.db.WithContext(ctx).Model(&model.BookingModel{}).Where("id = ?", id).Update("status", status)
 	if result.Error != nil {
@@ -232,6 +252,10 @@ func (r *BookingRepository) toModel(booking *entity.Booking) *model.BookingModel
 		Total:         booking.Total,
 		PaymentMethod: booking.PaymentMethod,
 		Status:        booking.Status,
+		// An unset key is stored as NULL, never as '', so the unique index
+		// admits any number of keyless bookings.
+		IdempotencyKey:     nullableString(booking.IdempotencyKey),
+		RequestFingerprint: nullableString(booking.RequestFingerprint),
 	}
 
 	for _, addon := range booking.BookingAddOns {
@@ -248,25 +272,27 @@ func (r *BookingRepository) toModel(booking *entity.Booking) *model.BookingModel
 
 func (r *BookingRepository) toEntity(m *model.BookingModel) *entity.Booking {
 	b := &entity.Booking{
-		ID:             m.ID,
-		CustomerID:     m.CustomerID,
-		ServiceID:      m.ServiceID,
-		ProviderID:     m.ProviderID,
-		ScheduleDate:   m.ScheduleDate,
-		ScheduleTime:   m.ScheduleTime,
-		Address:        m.Address,
-		Notes:          m.Notes,
-		SubTotal:       m.SubTotal,
-		PlatformFee:    m.PlatformFee,
-		Total:          m.Total,
-		PaymentMethod:  m.PaymentMethod,
-		Status:         m.Status,
-		Payment:        toPaymentEntityFromBooking(m.Payment),
-		CancellationID: m.CancellationID,
-		CancelledBy:    m.CancelledBy,
-		CancelledAt:    m.CancelledAt,
-		CreatedAt:      m.CreatedAt,
-		UpdatedAt:      m.UpdatedAt,
+		ID:                 m.ID,
+		CustomerID:         m.CustomerID,
+		ServiceID:          m.ServiceID,
+		ProviderID:         m.ProviderID,
+		ScheduleDate:       m.ScheduleDate,
+		ScheduleTime:       m.ScheduleTime,
+		Address:            m.Address,
+		Notes:              m.Notes,
+		SubTotal:           m.SubTotal,
+		PlatformFee:        m.PlatformFee,
+		Total:              m.Total,
+		PaymentMethod:      m.PaymentMethod,
+		Status:             m.Status,
+		IdempotencyKey:     stringValue(m.IdempotencyKey),
+		RequestFingerprint: stringValue(m.RequestFingerprint),
+		Payment:            toPaymentEntityFromBooking(m.Payment),
+		CancellationID:     m.CancellationID,
+		CancelledBy:        m.CancelledBy,
+		CancelledAt:        m.CancelledAt,
+		CreatedAt:          m.CreatedAt,
+		UpdatedAt:          m.UpdatedAt,
 	}
 
 	for _, addon := range m.BookingAddOns {

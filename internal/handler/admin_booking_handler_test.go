@@ -54,6 +54,9 @@ func (m *mockAdminBookingRepo) FindByUserID(ctx context.Context, userID uint, ro
 	}
 	return args.Get(0).([]*entity.Booking), args.Get(1).(int64), args.Error(2)
 }
+func (m *mockAdminBookingRepo) FindByIdempotencyKey(ctx context.Context, key string) (*entity.Booking, error) {
+	return nil, apperror.NewDomainError(apperror.ErrBookingNotFound, "BOOKING_NOT_FOUND", "booking not found")
+}
 func (m *mockAdminBookingRepo) FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error) {
 	args := m.Called(ctx, providerID, date)
 	if args.Get(0) == nil {

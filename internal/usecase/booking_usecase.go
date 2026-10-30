@@ -2,14 +2,18 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/internal/dto"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/idempotency"
 )
 
 type BookingUsecase struct {
@@ -31,6 +35,7 @@ type BookingUsecase struct {
 // prepaid bookings cannot be started.
 type PaymentInitiator interface {
 	CreateCheckout(ctx context.Context, booking *entity.Booking, channel string) (*entity.Payment, error)
+	RetryCheckout(ctx context.Context, bookingID uint, channel string) (*entity.Payment, error)
 	IsPrepaidChannel(channel string) bool
 }
 
@@ -121,7 +126,23 @@ func (uc *BookingUsecase) notifyBoth(ctx context.Context, booking *entity.Bookin
 	}
 }
 
-func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, req dto.CreateBookingRequest) (*entity.Booking, error) {
+// CreateBooking creates the booking and starts its checkout. A non-empty
+// idempotencyKey is bound to this request: a repeat of the same request by
+// the same customer returns the booking that was already created, and a key
+// reused for another request or another customer is refused.
+func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, req dto.CreateBookingRequest, idempotencyKey string) (*entity.Booking, error) {
+	fingerprint := ""
+	if idempotencyKey != "" {
+		fingerprint = idempotency.Fingerprint(idempotencyKey, bookingCanonicalRequest(req))
+		existing, err := uc.replayBooking(ctx, customerID, idempotencyKey, fingerprint)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			return existing, nil
+		}
+	}
+
 	service, err := uc.serviceRepo.FindByID(ctx, req.ServiceID)
 	if err != nil {
 		log.Printf("[BookingUsecase.CreateBooking] find service error: %v", err)
@@ -183,22 +204,32 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 	}
 
 	booking := &entity.Booking{
-		CustomerID:    customerID,
-		ServiceID:     service.ID,
-		ProviderID:    service.ProviderID,
-		ScheduleDate:  &scheduleDate,
-		ScheduleTime:  &req.ScheduleTime,
-		Address:       &req.Address,
-		Notes:         req.Notes,
-		SubTotal:      subTotal,
-		PlatformFee:   uc.platformFee,
-		Total:         total,
-		PaymentMethod: req.PaymentMethod,
-		Status:        entity.BookingStatusPendingPayment,
-		BookingAddOns: bookingAddOns,
+		CustomerID:         customerID,
+		ServiceID:          service.ID,
+		ProviderID:         service.ProviderID,
+		ScheduleDate:       &scheduleDate,
+		ScheduleTime:       &req.ScheduleTime,
+		Address:            &req.Address,
+		Notes:              req.Notes,
+		SubTotal:           subTotal,
+		PlatformFee:        uc.platformFee,
+		Total:              total,
+		PaymentMethod:      req.PaymentMethod,
+		Status:             entity.BookingStatusPendingPayment,
+		IdempotencyKey:     idempotencyKey,
+		RequestFingerprint: fingerprint,
+		BookingAddOns:      bookingAddOns,
 	}
 
 	if err := uc.bookingRepo.Create(ctx, booking); err != nil {
+		// A concurrent request with the same key may have won the unique
+		// index first; answer with the booking it created.
+		if idempotencyKey != "" {
+			existing, replayErr := uc.replayBooking(ctx, customerID, idempotencyKey, fingerprint)
+			if replayErr != nil || existing != nil {
+				return existing, replayErr
+			}
+		}
 		log.Printf("[BookingUsecase.CreateBooking] create error: %v", err)
 		return nil, err
 	}
@@ -216,6 +247,74 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 
 	uc.notifyCustomer(ctx, booking, "booking.created", "Pesanan dibuat",
 		"Pesanan dibuat. Selesaikan pembayaran agar pesanan diteruskan ke Mitra.")
+	return booking, nil
+}
+
+// replayBooking returns the booking that already carries the key, or nil
+// when no booking does. A key that belongs to another customer or was used
+// for another request is refused, and the error never reveals that booking.
+func (uc *BookingUsecase) replayBooking(ctx context.Context, customerID uint, key, fingerprint string) (*entity.Booking, error) {
+	existing, err := uc.bookingRepo.FindByIdempotencyKey(ctx, key)
+	if errors.Is(err, apperror.ErrBookingNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		log.Printf("[BookingUsecase.replayBooking] find error: %v", err)
+		return nil, err
+	}
+	if existing.CustomerID != customerID || existing.RequestFingerprint != fingerprint {
+		return nil, apperror.NewDomainError(apperror.ErrAlreadyExists, "IDEMPOTENCY_KEY_REUSED", "idempotency key was already used for a different request")
+	}
+	return existing, nil
+}
+
+// bookingCanonicalRequest is the request a booking key is bound to. Free
+// text is quoted so that a "|" inside it cannot make two different requests
+// produce the same canonical string.
+func bookingCanonicalRequest(req dto.CreateBookingRequest) string {
+	addOnIDs := make([]string, len(req.AddOnIDs))
+	for i, id := range req.AddOnIDs {
+		addOnIDs[i] = strconv.FormatUint(uint64(id), 10)
+	}
+	return idempotency.CanonicalRequest(
+		strconv.FormatUint(uint64(req.ServiceID), 10),
+		strconv.Quote(req.ScheduleDate),
+		strconv.Quote(req.ScheduleTime),
+		strconv.Quote(req.Address),
+		strconv.Quote(req.Notes),
+		strconv.Quote(strings.Join(addOnIDs, ",")),
+		strconv.Quote(req.PaymentMethod),
+	)
+}
+
+// RetryPayment sends the customer's pending checkout again. The payment
+// usecase reuses the key the attempt was first sent with, so a retry never
+// starts a second charge.
+func (uc *BookingUsecase) RetryPayment(ctx context.Context, customerID uint, bookingID uint) (*entity.Booking, error) {
+	booking, err := uc.bookingRepo.FindByID(ctx, bookingID)
+	if err != nil {
+		log.Printf("[BookingUsecase.RetryPayment] find error: %v", err)
+		return nil, err
+	}
+
+	if booking.CustomerID != customerID {
+		return nil, apperror.NewDomainError(apperror.ErrForbidden, "FORBIDDEN", "only the customer can pay for this booking")
+	}
+
+	if booking.Status != entity.BookingStatusPendingPayment {
+		return nil, apperror.NewDomainError(apperror.ErrInvalidTransition, "INVALID_TRANSITION", "can only retry payment for bookings awaiting payment")
+	}
+
+	if uc.paymentInitiator == nil {
+		return nil, apperror.NewDomainError(apperror.ErrPaymentNotConfigured, "PAYMENT_NOT_CONFIGURED", "payment is not available right now")
+	}
+
+	payment, err := uc.paymentInitiator.RetryCheckout(ctx, booking.ID, booking.PaymentMethod)
+	if err != nil {
+		log.Printf("[BookingUsecase.RetryPayment] retry checkout for booking %d: %v", booking.ID, err)
+		return nil, err
+	}
+	booking.Payment = payment
 	return booking, nil
 }
 

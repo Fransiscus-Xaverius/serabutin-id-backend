@@ -43,6 +43,9 @@ func (f *adminBookingFakeRepo) UpdateCancel(ctx context.Context, id uint, cancel
 func (f *adminBookingFakeRepo) FindByUserID(ctx context.Context, userID uint, role string, filter repository.BookingFilter) ([]*entity.Booking, int64, error) {
 	return nil, 0, nil
 }
+func (f *adminBookingFakeRepo) FindByIdempotencyKey(ctx context.Context, key string) (*entity.Booking, error) {
+	return nil, apperror.NewDomainError(apperror.ErrBookingNotFound, "BOOKING_NOT_FOUND", "booking not found")
+}
 func (f *adminBookingFakeRepo) FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error) {
 	return nil, nil
 }

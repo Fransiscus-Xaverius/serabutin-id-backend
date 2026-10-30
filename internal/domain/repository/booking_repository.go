@@ -16,6 +16,9 @@ type BookingRepository interface {
 	UpdateSchedule(ctx context.Context, id uint, scheduleDate time.Time, scheduleTime string, address string) error
 	UpdateCancel(ctx context.Context, id uint, cancellationID uint, cancelledBy uint) error
 	FindByUserID(ctx context.Context, userID uint, role string, filter BookingFilter) ([]*entity.Booking, int64, error)
+	// FindByIdempotencyKey returns the booking created with the key, or
+	// BOOKING_NOT_FOUND when no booking carries it.
+	FindByIdempotencyKey(ctx context.Context, key string) (*entity.Booking, error)
 	FindBookedSlotsByProvider(ctx context.Context, providerID uint, date string) ([]string, error)
 	// ListForAdmin serves the admin bookings queue: optional status,
 	// customer, provider, and schedule-date-range filters. Empty fields
