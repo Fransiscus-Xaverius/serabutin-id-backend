@@ -508,7 +508,7 @@ git commit -m "feat(bookings): honour an Idempotency-Key header so a double subm
 
 **Interfaces:**
 - `bookingService.create(data, { idempotencyKey })` sends the header `Idempotency-Key`.
-- `bookingService.retryPayment(id)` → `POST /api/v1/bookings/{id}/payment`.
+- `bookingService.retryPayment(id)` → `POST /api/v1/bookings/{id}/payment/retry`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -548,7 +548,7 @@ Expected: FAIL — no idempotency key is sent.
   },
 
   async retryPayment(id) {
-    const response = await api.post(`/api/v1/bookings/${id}/payment`)
+    const response = await api.post(`/api/v1/bookings/${id}/payment/retry`)
     return response.data.data
   },
   ```
