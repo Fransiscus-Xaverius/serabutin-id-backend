@@ -24,6 +24,11 @@ type fakePaymentRepo struct {
 	bookings  map[uint]*entity.Booking
 	byInvoice map[string]*entity.Payment
 	nextID    uint
+	// persisted is the row as the database holds it. It is a value copy,
+	// not the shared pointer above: Create stores a snapshot and
+	// UpdateIdempotency writes the key columns into it. A gateway call
+	// reads this copy, so a key that was never written stays invisible.
+	persisted map[uint]entity.Payment
 }
 
 func newFakePaymentRepo() *fakePaymentRepo {
@@ -32,6 +37,7 @@ func newFakePaymentRepo() *fakePaymentRepo {
 		bookings:  map[uint]*entity.Booking{},
 		byInvoice: map[string]*entity.Payment{},
 		nextID:    1,
+		persisted: map[uint]entity.Payment{},
 	}
 }
 
@@ -40,7 +46,18 @@ func (f *fakePaymentRepo) Create(ctx context.Context, p *entity.Payment) error {
 	f.nextID++
 	f.payments[p.ID] = p
 	f.byInvoice[p.InvoiceNumber] = p
+	f.persisted[p.ID] = *p
 	return nil
+}
+
+// persistedByInvoice returns the stored copy of the row with the invoice.
+func (f *fakePaymentRepo) persistedByInvoice(invoice string) (entity.Payment, bool) {
+	for _, p := range f.persisted {
+		if p.InvoiceNumber == invoice {
+			return p, true
+		}
+	}
+	return entity.Payment{}, false
 }
 
 func (f *fakePaymentRepo) FindByBookingID(ctx context.Context, bookingID uint) (*entity.Payment, error) {
@@ -76,6 +93,10 @@ func (f *fakePaymentRepo) UpdateIdempotency(ctx context.Context, paymentID uint,
 	}
 	p.IdempotencyKey = key
 	p.RequestFingerprint = fingerprint
+	stored := f.persisted[paymentID]
+	stored.IdempotencyKey = key
+	stored.RequestFingerprint = fingerprint
+	f.persisted[paymentID] = stored
 	return nil
 }
 
@@ -235,16 +256,32 @@ func (f *fakePaymentBookingRepo) ListForAdmin(ctx context.Context, filter reposi
 	return nil, 0, nil
 }
 
+// storedAtCall is what the payment repository held for the attempt at the
+// moment the gateway was called.
+type storedAtCall struct {
+	found       bool
+	key         string
+	fingerprint string
+}
+
 type fakeGateway struct {
 	url      string
 	err      error
 	replayed bool
 	requests []payment.CreateCheckoutRequest
+	// repo, when set, lets the gateway look at the persisted row at call
+	// time; seen records what it found on each call.
+	repo *fakePaymentRepo
+	seen []storedAtCall
 }
 
 func (g *fakeGateway) Name() string { return "doku" }
 func (g *fakeGateway) CreateCheckout(ctx context.Context, req payment.CreateCheckoutRequest) (*payment.CreateCheckoutResult, error) {
 	g.requests = append(g.requests, req)
+	if g.repo != nil {
+		stored, found := g.repo.persistedByInvoice(req.InvoiceNumber)
+		g.seen = append(g.seen, storedAtCall{found: found, key: stored.IdempotencyKey, fingerprint: stored.RequestFingerprint})
+	}
 	if g.err != nil {
 		return nil, g.err
 	}
@@ -332,7 +369,8 @@ func TestPaymentUsecase_CreateCheckout_GatewayFailure_RecordsFailedPayment(t *te
 
 func TestPaymentUsecase_CreateCheckout_PersistsTheKeyBeforeCallingTheGateway(t *testing.T) {
 	gateway := &fakeGateway{url: "https://checkout.test/pay/1"}
-	uc, _, _, _ := newPaymentTestUC(t, gateway)
+	uc, paymentRepo, _, _ := newPaymentTestUC(t, gateway)
+	gateway.repo = paymentRepo
 
 	booking := &entity.Booking{ID: 42, CustomerID: 7, Total: 155000, Status: entity.BookingStatusPendingPayment}
 	record, err := uc.CreateCheckout(context.Background(), booking, "qris")
@@ -342,6 +380,13 @@ func TestPaymentUsecase_CreateCheckout_PersistsTheKeyBeforeCallingTheGateway(t *
 	assert.NotEmpty(t, record.RequestFingerprint)
 	require.Len(t, gateway.requests, 1)
 	assert.Equal(t, "SRB-42-1", gateway.requests[0].RequestID, "the gateway must receive the persisted key")
+
+	// At the moment DOKU is called, the stored row must already carry the
+	// key and fingerprint the request is sent with.
+	require.Len(t, gateway.seen, 1)
+	require.True(t, gateway.seen[0].found, "the attempt must be stored before the gateway call")
+	assert.Equal(t, "SRB-42-1", gateway.seen[0].key)
+	assert.Equal(t, record.RequestFingerprint, gateway.seen[0].fingerprint)
 }
 
 func TestPaymentUsecase_CreateCheckout_UsesANewKeyForANewAttempt(t *testing.T) {
@@ -387,7 +432,8 @@ func TestPaymentUsecase_RetryCheckout_ReusesTheSameKeyAndFingerprint(t *testing.
 
 func TestPaymentUsecase_RetryCheckout_ResendsAFailedAttemptWithItsOriginalKey(t *testing.T) {
 	gateway := &fakeGateway{url: "https://checkout.test/pay/1", err: errors.New("doku timeout")}
-	uc, _, bookingRepo, _ := newPaymentTestUC(t, gateway)
+	uc, paymentRepo, bookingRepo, _ := newPaymentTestUC(t, gateway)
+	gateway.repo = paymentRepo
 
 	booking := &entity.Booking{ID: 42, CustomerID: 7, Total: 155000}
 	bookingRepo.bookings[42] = booking
@@ -404,6 +450,9 @@ func TestPaymentUsecase_RetryCheckout_ResendsAFailedAttemptWithItsOriginalKey(t 
 	require.Len(t, gateway.requests, 2)
 	assert.Equal(t, gateway.requests[0].RequestID, gateway.requests[1].RequestID, "the retry must reuse the first attempt's key")
 	assert.Equal(t, failed.IdempotencyKey, retried.IdempotencyKey)
+	require.Len(t, gateway.seen, 2)
+	assert.Equal(t, failed.IdempotencyKey, gateway.seen[1].key, "the retry must find the stored key, not a new one")
+	assert.Equal(t, failed.RequestFingerprint, gateway.seen[1].fingerprint)
 }
 
 func TestPaymentUsecase_RetryCheckout_RefusesAnExpiredAttempt(t *testing.T) {
@@ -422,6 +471,49 @@ func TestPaymentUsecase_RetryCheckout_RefusesAnExpiredAttempt(t *testing.T) {
 	require.ErrorAs(t, err, &domainErr)
 	assert.Equal(t, "PAYMENT_EXPIRED", domainErr.Code)
 	assert.Len(t, gateway.requests, 1, "an expired attempt must not reach the gateway again")
+}
+
+func TestPaymentUsecase_RetryCheckout_RefusesAPendingAttemptWhoseCheckoutHasExpired(t *testing.T) {
+	gateway := &fakeGateway{url: "https://checkout.test/pay/1"}
+	uc, paymentRepo, bookingRepo, _ := newPaymentTestUC(t, gateway)
+
+	booking := &entity.Booking{ID: 42, Total: 155000}
+	bookingRepo.bookings[42] = booking
+	created, err := uc.CreateCheckout(context.Background(), booking, "qris")
+	require.NoError(t, err)
+	require.Equal(t, entity.PaymentStatusPending, created.Status)
+	require.NotEmpty(t, created.PaymentURL)
+
+	// Still pending with a checkout URL, but the checkout's window has
+	// passed: the URL is dead and must not be handed back as payable.
+	past := uc.now().Add(-time.Minute)
+	paymentRepo.payments[created.ID].ExpiresAt = &past
+
+	retried, err := uc.RetryCheckout(context.Background(), 42, "qris")
+
+	require.Error(t, err)
+	assert.Nil(t, retried)
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, "PAYMENT_EXPIRED", domainErr.Code)
+	assert.Len(t, gateway.requests, 1, "an expired checkout must not be sent to the gateway again")
+}
+
+func TestPaymentUsecase_RetryCheckout_ReturnsALivePendingAttemptUnchanged(t *testing.T) {
+	gateway := &fakeGateway{url: "https://checkout.test/pay/1"}
+	uc, _, bookingRepo, _ := newPaymentTestUC(t, gateway)
+
+	booking := &entity.Booking{ID: 42, Total: 155000}
+	bookingRepo.bookings[42] = booking
+	created, err := uc.CreateCheckout(context.Background(), booking, "qris")
+	require.NoError(t, err)
+
+	retried, err := uc.RetryCheckout(context.Background(), 42, "qris")
+
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, retried.ID)
+	assert.Equal(t, "https://checkout.test/pay/1", retried.PaymentURL)
+	assert.Len(t, gateway.requests, 1, "a live pending checkout is returned without a provider call")
 }
 
 func notificationBody(invoice string, amount int64, status string) []byte {

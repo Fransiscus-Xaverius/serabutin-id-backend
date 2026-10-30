@@ -152,12 +152,12 @@ func (uc *PaymentUsecase) RetryCheckout(ctx context.Context, bookingID uint, cha
 	if err != nil {
 		return nil, err
 	}
-	if stored.Status == entity.PaymentStatusPending && stored.PaymentURL != "" {
-		return stored, nil
-	}
 	if stored.Status == entity.PaymentStatusExpired ||
 		(stored.Status == entity.PaymentStatusPending && stored.ExpiresAt != nil && !uc.now().Before(*stored.ExpiresAt)) {
 		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_EXPIRED", "payment has expired, create a new booking")
+	}
+	if stored.Status == entity.PaymentStatusPending && stored.PaymentURL != "" {
+		return stored, nil
 	}
 	if stored.Status != entity.PaymentStatusPending && stored.Status != entity.PaymentStatusFailed {
 		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_NOT_RETRYABLE", "payment cannot be retried")
