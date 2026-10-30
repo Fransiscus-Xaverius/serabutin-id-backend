@@ -144,8 +144,16 @@ func main() {
 	reviewUsecase := usecase.NewReviewUsecase(reviewRepo, bookingRepo, userRepo)
 	reviewHandler := handler.NewReviewHandler(reviewUsecase, profileUsecase)
 	payoutRepo := gormrepo.NewPayoutAccountRepository(db)
-	payoutUsecase := usecase.NewPayoutUsecase(payoutRepo, userRepo, payoutCipher, cfg.PayoutEncryptionKeyID)
+	payoutUsecase := usecase.NewPayoutUsecase(payoutRepo, userRepo, payoutCipher, cfg.PayoutEncryptionKeyID).WithRelease(usecase.PayoutRelease{
+		Payouts:     gormrepo.NewPayoutRepository(db),
+		Bookings:    bookingRepo,
+		Payments:    gormrepo.NewPaymentRepository(db),
+		Gateway:     doku.NewSubAccountClient(doku.Config{ClientID: cfg.DOKUClientID, SecretKey: cfg.DOKUSecretKey, BaseURL: cfg.DOKUBaseURL}),
+		FromAccount: cfg.DOKUSourceAccount,
+		ProfileID:   cfg.DOKUHubProfileID,
+	})
 	payoutHandler := handler.NewPayoutHandler(payoutUsecase, profileUsecase)
+	payoutReleaseHandler := handler.NewPayoutReleaseHandler(payoutUsecase, cfg.DOKUSecretKey, config.RequirePayoutRelease(cfg))
 	introspectUsecase := usecase.NewIntrospectUsecase(tokenService, tokenRepo, userRepo)
 	introspectHandler := handler.NewIntrospectHandler(introspectUsecase)
 	userUsecase := usecase.NewUserUsecase(userRepo)
@@ -316,6 +324,7 @@ func main() {
 	// server to server; the notification signature is what makes it trusted.
 	api.Get("/booking-config", paymentHandler.GetConfig)
 	api.Post("/payments/doku/webhook", paymentHandler.Webhook)
+	api.Post("/payments/doku/transfer-webhook", payoutReleaseHandler.TransferWebhook)
 	api.Post("/payments/mock/:invoice/succeed", paymentHandler.MockSucceed)
 	api.Post("/payments/mock/:invoice/expire", paymentHandler.MockExpire)
 
@@ -398,6 +407,7 @@ func main() {
 	admin.Get("/transactions", adminHandler.ListTransactions)
 	admin.Get("/payouts", adminHandler.ListPayouts)
 	admin.Post("/payouts/mark", adminHandler.MarkPayoutPaid)
+	admin.Post("/bookings/:id/payout", payoutReleaseHandler.Release)
 	admin.Get("/reimbursements", adminHandler.ListReimbursements)
 	admin.Patch("/reimbursements/:id", adminHandler.DecideReimbursement)
 	admin.Get("/kill-switches", adminHandler.ListKillSwitches)

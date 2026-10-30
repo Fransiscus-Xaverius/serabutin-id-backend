@@ -78,6 +78,13 @@ type Config struct {
 	// It is required; the server refuses to start without it.
 	PayoutEncryptionKey   []byte
 	PayoutEncryptionKeyID string
+
+	// DOKUHubProfileID is the hub sub-account whose settled balance gates a
+	// payout release. DOKUSourceAccount is the hub's DOKU_MERCHANT_IDR account
+	// number, the account money leaves from. Both are empty until DOKU has
+	// activated the hub sub-account, and a release is refused while either is.
+	DOKUHubProfileID  string
+	DOKUSourceAccount string
 }
 
 const (
@@ -144,6 +151,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("DOKU_SECRET_KEY", "")
 	viper.SetDefault("DOKU_BASE_URL", "https://api-sandbox.doku.com")
 	viper.SetDefault("DOKU_HUB_ACCOUNT_ID", "")
+	viper.SetDefault("DOKU_HUB_PROFILE_ID", "")
+	viper.SetDefault("DOKU_SOURCE_ACCOUNT", "")
 	viper.SetDefault("DOKU_NOTIFICATION_PATH", "/api/v1/payments/doku/webhook")
 	viper.SetDefault("DOKU_OVERRIDE_NOTIFICATION_URL", "")
 	viper.SetDefault("DOKU_PAYMENT_METHODS", "qris")
@@ -205,6 +214,8 @@ func Load() (*Config, error) {
 	cfg.DOKUSecretKey = viper.GetString("DOKU_SECRET_KEY")
 	cfg.DOKUBaseURL = viper.GetString("DOKU_BASE_URL")
 	cfg.DOKUHubAccountID = viper.GetString("DOKU_HUB_ACCOUNT_ID")
+	cfg.DOKUHubProfileID = strings.TrimSpace(viper.GetString("DOKU_HUB_PROFILE_ID"))
+	cfg.DOKUSourceAccount = strings.TrimSpace(viper.GetString("DOKU_SOURCE_ACCOUNT"))
 	cfg.DOKUNotificationPath = viper.GetString("DOKU_NOTIFICATION_PATH")
 	cfg.DOKUOverrideNotificationURL = strings.TrimRight(strings.TrimSpace(viper.GetString("DOKU_OVERRIDE_NOTIFICATION_URL")), "/")
 	cfg.DOKUPaymentMethods = ParsePaymentChannels(viper.GetString("DOKU_PAYMENT_METHODS"))
@@ -253,6 +264,23 @@ func Load() (*Config, error) {
 func RequirePayoutEncryptionKey(cfg *Config) error {
 	if len(cfg.PayoutEncryptionKey) != encryption.KeySize {
 		return fmt.Errorf("PAYOUT_ENCRYPTION_KEY is missing or invalid: it must be %d base64-encoded bytes (generate one with: openssl rand -base64 32)", encryption.KeySize)
+	}
+	return nil
+}
+
+// RequirePayoutRelease reports why a payout release cannot run yet. A release
+// needs the hub's profile and source account, which DOKU provides only once the
+// hub sub-account is activated. The error names the variables, never their values.
+func RequirePayoutRelease(cfg *Config) error {
+	var missing []string
+	if cfg.DOKUHubProfileID == "" {
+		missing = append(missing, "DOKU_HUB_PROFILE_ID")
+	}
+	if cfg.DOKUSourceAccount == "" {
+		missing = append(missing, "DOKU_SOURCE_ACCOUNT")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("payout release is not configured: %s must be set once DOKU has activated the hub sub-account", strings.Join(missing, " and "))
 	}
 	return nil
 }
