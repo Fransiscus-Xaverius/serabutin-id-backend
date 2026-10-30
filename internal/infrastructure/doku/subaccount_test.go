@@ -283,22 +283,191 @@ func TestSubAccount_TokenRequestIsSignedWithTheNonSNAPScheme(t *testing.T) {
 		subAccountTokenPath, Digest(tokenBody), testSecret), strings.TrimPrefix(tokenHeader.Get("Signature"), signaturePrefix))
 }
 
-func TestSubAccount_TransactionStatusReadsTheLatestStatus(t *testing.T) {
+const subAccountStatusDocumentedResponse = `{"responseCode":"2000000","responseMessage":"Successful","partnerReferenceNo":"PR-1","transactionType":"TRANSFER_P2P","latestTransactionStatus":"00","latestTransactionDesc":"success","transactionDate":"2026-10-31T09:00:00Z","amount":{"value":"155000.00","currency":"IDR"},"refundHistory":[{"refundNo":"RF-1","refundStatus":"SUCCESS","transactionDate":"2026-10-31T10:00:00Z","reason":"reversal","refundAmount":{"value":"0.00","currency":"IDR"}}]}`
+
+func TestSubAccount_TransactionStatusSendsTheDocumentedRequestBody(t *testing.T) {
 	server, state := newSubAccountServer(t, func(w http.ResponseWriter) {
-		_, _ = w.Write([]byte(`{"originalPartnerReferenceNo":"PR-1","originalReferenceNo":"REF-900001","latestTransactionStatus":"00","transactionStatusDesc":"Success"}`))
+		_, _ = w.Write([]byte(subAccountStatusDocumentedResponse))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	_, err := client.TransactionStatus(context.Background(), "PR-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, subAccountStatusPath, state.lastPath)
+	assert.Equal(t, `{"partnerReferenceNo":"PR-1"}`, string(state.lastBody))
+}
+
+func TestSubAccount_TransactionStatusReadsTheDocumentedResponse(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(subAccountStatusDocumentedResponse))
 	})
 	client := newTestSubAccountClient(server.URL)
 
 	result, err := client.TransactionStatus(context.Background(), "PR-1")
 
 	require.NoError(t, err)
-	assert.Equal(t, subAccountStatusPath, state.lastPath)
+	assert.Equal(t, "PR-1", result.PartnerReferenceNo)
+	assert.Equal(t, "TRANSFER_P2P", result.TransactionType)
+	assert.Equal(t, TransactionStatusSuccess, result.LatestStatus)
 	assert.Equal(t, "00", result.LatestStatus)
-	assert.Equal(t, subAccountTestRemoteRef, result.ReferenceNo)
+	assert.Equal(t, "success", result.LatestStatusDesc)
+	assert.Equal(t, "2026-10-31T09:00:00Z", result.TransactionDate)
+	assert.Equal(t, Money{Value: "155000.00", Currency: "IDR"}, result.Amount)
+	require.Len(t, result.RefundHistory, 1)
+	assert.Equal(t, "RF-1", result.RefundHistory[0].RefundNo)
+	assert.Equal(t, "SUCCESS", result.RefundHistory[0].RefundStatus)
+	assert.Equal(t, "reversal", result.RefundHistory[0].Reason)
+	assert.Equal(t, Money{Value: "0.00", Currency: "IDR"}, result.RefundHistory[0].RefundAmount)
+}
 
-	var sent map[string]interface{}
-	require.NoError(t, json.Unmarshal(state.lastBody, &sent))
-	assert.Equal(t, "PR-1", sent["partnerReferenceNo"])
+func TestSubAccount_TransactionStatusFailsClosedWithoutAMatchingReference(t *testing.T) {
+	cases := map[string]string{
+		"missing partner reference": `{"latestTransactionStatus":"00"}`,
+		"other partner reference":   `{"partnerReferenceNo":"PR-OTHER","latestTransactionStatus":"00"}`,
+		"missing status":            `{"partnerReferenceNo":"PR-1"}`,
+	}
+	for name, response := range cases {
+		t.Run(name, func(t *testing.T) {
+			server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+				_, _ = w.Write([]byte(response))
+			})
+			client := newTestSubAccountClient(server.URL)
+
+			result, err := client.TransactionStatus(context.Background(), "PR-1")
+
+			require.Error(t, err)
+			assert.Nil(t, result)
+			assert.NotContains(t, err.Error(), testSecret)
+			assert.NotContains(t, err.Error(), subAccountTestToken)
+		})
+	}
+}
+
+func TestSubAccount_BalanceInquirySendsTheDocumentedRequestBody(t *testing.T) {
+	server, state := newSubAccountServer(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`{}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	_, err := client.BalanceInquiry(context.Background(), "hub-profile-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, subAccountBalancePath, state.lastPath)
+	assert.Equal(t, `{"profileId":"hub-profile-1"}`, string(state.lastBody), "accounts is optional and omitted, so all accounts come back")
+}
+
+func TestSubAccount_BalanceInquiryReadsTheDocumentedResponse(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`{"responseCode":"2000000","responseMessage":"Successful","name":"Mitra Budi","profileId":"hub-profile-1","accounts":[` +
+			`{"type":"DOKU_MERCHANT_IDR","currency":"IDR","accountNo":"ACC-1","balance":{"available":"1000000.00","reserved":"0.00"}},` +
+			`{"type":"DOKU_MERCHANT_PENDING_IDR","currency":"IDR","accountNo":"ACC-2","balance":{"available":"0.00","reserved":"250000.00"}},` +
+			`{"type":"DOKU_MERCHANT_POINT","currency":"POINT","accountNo":"ACC-3","balance":{"available":"5.00","reserved":"0.00"}}]}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	result, err := client.BalanceInquiry(context.Background(), "hub-profile-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Mitra Budi", result.Name)
+	assert.Equal(t, "hub-profile-1", result.ProfileID)
+	require.Len(t, result.Accounts, 3)
+	assert.Equal(t, BalanceAccount{
+		Type:      "DOKU_MERCHANT_PENDING_IDR",
+		Currency:  "IDR",
+		AccountNo: "ACC-2",
+		Available: "0.00",
+		Reserved:  "250000.00",
+	}, result.Accounts[1])
+}
+
+func TestSubAccount_SettledAvailableIsTheIDRAccountNotThePendingOne(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`{"accounts":[` +
+			`{"type":"DOKU_MERCHANT_PENDING_IDR","currency":"IDR","accountNo":"ACC-2","balance":{"available":"9.00","reserved":"250000.00"}},` +
+			`{"type":"DOKU_MERCHANT_IDR","currency":"IDR","accountNo":"ACC-1","balance":{"available":"1000000.00","reserved":"0.00"}}]}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	result, err := client.BalanceInquiry(context.Background(), "hub-profile-1")
+	require.NoError(t, err)
+
+	available, ok := result.SettledAvailable()
+	require.True(t, ok)
+	assert.Equal(t, "1000000.00", available)
+}
+
+func TestSubAccount_SettledAvailableIsAbsentWithoutTheIDRAccount(t *testing.T) {
+	result := &BalanceResult{Accounts: []BalanceAccount{{Type: BalanceAccountMerchantPendingIDR, Available: "9.00"}}}
+
+	_, ok := result.SettledAvailable()
+
+	assert.False(t, ok)
+}
+
+func TestSubAccount_TransferInquiryReadsTheBeneficiaryNameFromTheDocumentedResponse(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`{"responseCode":"2002400","responseMessage":"Successful","referenceNo":"REF-900001","partnerReferenceNo":"PR-1","type":"BANK_ACCOUNT","channel":"BI_FAST","fromAccount":"9999999999","beneficiaryAccountNumber":"1234567890","beneficiaryAccountName":"BUDI SANTOSO","beneficiaryBankCode":"014","amount":{"value":"155000.00","currency":"IDR"}}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	result, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+
+	require.NoError(t, err)
+	assert.Equal(t, "BUDI SANTOSO", result.BeneficiaryAccountName)
+	assert.Equal(t, subAccountTestRemoteRef, result.ReferenceNo)
+}
+
+func TestSubAccount_TransferPaymentReadsTheDocumentedResponse(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`{"responseCode":"2002500","responseMessage":"Successful","referenceNo":"REF-900001","partnerReferenceNo":"PR-1","type":"BANK_ACCOUNT","channel":"BI_FAST","amount":{"value":"155000.00","currency":"IDR"},"referenceNumber":"RN-77","transactionDate":"2026-10-31T09:01:00Z","beneficiaryBankCode":"014","beneficiaryAccountNumber":"1234567890","beneficiaryAccountName":"BUDI SANTOSO","fromAccount":"9999999999"}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	result, err := client.TransferPayment(context.Background(), TransferPaymentRequest{
+		TransferInquiryRequest: testInquiryRequest(),
+		ReferenceNo:            subAccountTestRemoteRef,
+		BeneficiaryAccountName: "BUDI SANTOSO",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "RN-77", result.ReferenceNumber)
+	assert.Equal(t, "2026-10-31T09:01:00Z", result.TransactionDate)
+}
+
+func TestSubAccount_TransferFailsClosedOnA2xxWithoutAReferenceNo(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`{"responseCode":"2002500","partnerReferenceNo":"PR-1"}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	inquiry, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	require.Error(t, err)
+	assert.Nil(t, inquiry)
+
+	payment, err := client.TransferPayment(context.Background(), TransferPaymentRequest{
+		TransferInquiryRequest: testInquiryRequest(),
+		ReferenceNo:            subAccountTestRemoteRef,
+		BeneficiaryAccountName: "BUDI SANTOSO",
+	})
+	require.Error(t, err)
+	assert.Nil(t, payment)
+}
+
+func TestSubAccount_ErrorBodiesNeverCarryTheTokenOrSecret(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"echo":"Bearer ` + subAccountTestToken + ` secret ` + testSecret + `"}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	_, err := client.TransactionStatus(context.Background(), "PR-1")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HTTP 400")
+	assert.NotContains(t, err.Error(), testSecret)
+	assert.NotContains(t, err.Error(), subAccountTestToken)
+	assert.Contains(t, err.Error(), "[redacted]")
 }
 
 func TestSubAccount_RequiresConfiguration(t *testing.T) {

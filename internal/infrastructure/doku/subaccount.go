@@ -33,6 +33,24 @@ const (
 	subAccountChannel            = "BI_FAST"
 	subAccountCurrency           = "IDR"
 	subAccountMaxResponseBytes   = 1 << 20
+	subAccountMaxErrorBytes      = 500
+)
+
+// Transaction status codes from transactions-status (latestTransactionStatus).
+const (
+	TransactionStatusSuccess  = "00"
+	TransactionStatusPending  = "03"
+	TransactionStatusRefunded = "04"
+	TransactionStatusCanceled = "05"
+	TransactionStatusFailed   = "06"
+)
+
+// Balance account types from balance-inquiries. Only DOKU_MERCHANT_IDR is
+// settled and withdrawable; DOKU_MERCHANT_PENDING_IDR is held.
+const (
+	BalanceAccountMerchantIDR        = "DOKU_MERCHANT_IDR"
+	BalanceAccountMerchantPendingIDR = "DOKU_MERCHANT_PENDING_IDR"
+	BalanceAccountMerchantPoint      = "DOKU_MERCHANT_POINT"
 )
 
 var subAccountZone = time.FixedZone("WIB", 7*60*60)
@@ -61,7 +79,8 @@ func NewSubAccountClient(cfg Config) *SubAccountClient {
 }
 
 // TransferInquiry asks DOKU to validate a transfer and resolve the beneficiary
-// account name. PartnerReferenceNo is the caller's idempotency key.
+// account name. The name must be shown to the user for confirmation before
+// TransferPayment. PartnerReferenceNo is the caller's idempotency key.
 func (c *SubAccountClient) TransferInquiry(ctx context.Context, req TransferInquiryRequest) (*TransferInquiryResult, error) {
 	if err := c.requireConfigured(); err != nil {
 		return nil, err
@@ -108,50 +127,87 @@ func (c *SubAccountClient) TransferPayment(ctx context.Context, req TransferPaym
 	return &TransferPaymentResult{
 		ReferenceNo:        parsed.ReferenceNo,
 		PartnerReferenceNo: firstNonEmpty(parsed.PartnerReferenceNo, req.PartnerReferenceNo),
+		ReferenceNumber:    parsed.ReferenceNumber,
+		TransactionDate:    parsed.TransactionDate,
 		Replayed:           replayed,
 	}, nil
 }
 
 // TransactionStatus reads the latest status of a transfer by its partner
-// reference no.
+// reference no. Compare LatestStatus against the TransactionStatus constants.
 func (c *SubAccountClient) TransactionStatus(ctx context.Context, partnerReferenceNo string) (*TransactionStatusResult, error) {
 	if err := c.requireConfigured(); err != nil {
 		return nil, err
 	}
+	if partnerReferenceNo == "" {
+		return nil, fmt.Errorf("doku transaction status requires a partner reference no")
+	}
 
 	var parsed transactionStatusResponse
-	err := c.postJSON(ctx, subAccountStatusPath, struct {
-		PartnerReferenceNo string `json:"partnerReferenceNo"`
-	}{PartnerReferenceNo: partnerReferenceNo}, &parsed)
+	err := c.postJSON(ctx, subAccountStatusPath, transactionStatusRequest{PartnerReferenceNo: partnerReferenceNo}, &parsed)
 	if err != nil {
 		return nil, err
 	}
+	if parsed.PartnerReferenceNo != partnerReferenceNo {
+		return nil, fmt.Errorf("doku sub-account %s response does not match partner reference no %q", subAccountStatusPath, partnerReferenceNo)
+	}
+	if parsed.LatestTransactionStatus == "" {
+		return nil, fmt.Errorf("doku sub-account %s response missing latestTransactionStatus", subAccountStatusPath)
+	}
+
+	refunds := make([]TransactionRefund, 0, len(parsed.RefundHistory))
+	for _, refund := range parsed.RefundHistory {
+		refunds = append(refunds, TransactionRefund{
+			RefundNo:        refund.RefundNo,
+			RefundStatus:    refund.RefundStatus,
+			TransactionDate: refund.TransactionDate,
+			Reason:          refund.Reason,
+			RefundAmount:    refund.RefundAmount,
+		})
+	}
 
 	return &TransactionStatusResult{
-		PartnerReferenceNo: firstNonEmpty(parsed.OriginalPartnerReferenceNo, partnerReferenceNo),
-		ReferenceNo:        parsed.OriginalReferenceNo,
+		PartnerReferenceNo: parsed.PartnerReferenceNo,
+		TransactionType:    parsed.TransactionType,
 		LatestStatus:       parsed.LatestTransactionStatus,
-		StatusDescription:  parsed.TransactionStatusDesc,
+		LatestStatusDesc:   parsed.LatestTransactionDesc,
+		TransactionDate:    parsed.TransactionDate,
+		Amount:             parsed.Amount,
+		RefundHistory:      refunds,
 	}, nil
 }
 
-// BalanceInquiry reads the available balance of a Mitra's sub-account profile.
+// BalanceInquiry reads the balances of a hub profile. Gate a release on the
+// settled DOKU_MERCHANT_IDR available balance (see SettledAvailable).
 func (c *SubAccountClient) BalanceInquiry(ctx context.Context, profileID string) (*BalanceResult, error) {
 	if err := c.requireConfigured(); err != nil {
 		return nil, err
 	}
+	if profileID == "" {
+		return nil, fmt.Errorf("doku balance inquiry requires a profile id")
+	}
 
 	var parsed balanceResponse
-	err := c.postJSON(ctx, subAccountBalancePath, struct {
-		ProfileID string `json:"profileId"`
-	}{ProfileID: profileID}, &parsed)
+	err := c.postJSON(ctx, subAccountBalancePath, balanceRequest{ProfileID: profileID}, &parsed)
 	if err != nil {
 		return nil, err
 	}
 
+	accounts := make([]BalanceAccount, 0, len(parsed.Accounts))
+	for _, account := range parsed.Accounts {
+		accounts = append(accounts, BalanceAccount{
+			Type:      account.Type,
+			Currency:  account.Currency,
+			AccountNo: account.AccountNo,
+			Available: account.Balance.Available,
+			Reserved:  account.Balance.Reserved,
+		})
+	}
+
 	return &BalanceResult{
-		Currency:  parsed.AvailableBalance.Currency,
-		Available: parsed.AvailableBalance.Value,
+		ProfileID: parsed.ProfileID,
+		Name:      parsed.Name,
+		Accounts:  accounts,
 	}, nil
 }
 
@@ -180,19 +236,58 @@ type TransferPaymentRequest struct {
 type TransferPaymentResult struct {
 	ReferenceNo        string
 	PartnerReferenceNo string
+	ReferenceNumber    string
+	TransactionDate    string
 	Replayed           bool
+}
+
+// Money is a DOKU amount: a decimal string and its currency.
+type Money struct {
+	Value    string `json:"value"`
+	Currency string `json:"currency"`
 }
 
 type TransactionStatusResult struct {
 	PartnerReferenceNo string
-	ReferenceNo        string
+	TransactionType    string
 	LatestStatus       string
-	StatusDescription  string
+	LatestStatusDesc   string
+	TransactionDate    string
+	Amount             Money
+	RefundHistory      []TransactionRefund
+}
+
+type TransactionRefund struct {
+	RefundNo        string
+	RefundStatus    string
+	TransactionDate string
+	Reason          string
+	RefundAmount    Money
 }
 
 type BalanceResult struct {
+	ProfileID string
+	Name      string
+	Accounts  []BalanceAccount
+}
+
+type BalanceAccount struct {
+	Type      string
 	Currency  string
+	AccountNo string
 	Available string
+	Reserved  string
+}
+
+// SettledAvailable returns the withdrawable balance: the available amount of
+// the DOKU_MERCHANT_IDR account. The pending account is never withdrawable.
+func (r *BalanceResult) SettledAvailable() (string, bool) {
+	for _, account := range r.Accounts {
+		if account.Type == BalanceAccountMerchantIDR {
+			return account.Available, true
+		}
+	}
+	return "", false
 }
 
 func (c *SubAccountClient) requireConfigured() error {
@@ -204,6 +299,7 @@ func (c *SubAccountClient) requireConfigured() error {
 
 // transfer posts a transfer call. A 409 that carries a reference is the
 // original transfer answering a repeated partnerReferenceNo, so it is a replay.
+// A 2xx without a referenceNo is an error: the transfer state is unknown.
 func (c *SubAccountClient) transfer(ctx context.Context, path string, payload any) (transferResponse, bool, error) {
 	status, raw, err := c.call(ctx, path, payload)
 	if err != nil {
@@ -217,7 +313,7 @@ func (c *SubAccountClient) transfer(ctx context.Context, path string, payload an
 		}
 	}
 	if status < 200 || status >= 300 {
-		return transferResponse{}, false, fmt.Errorf("doku sub-account %s returned HTTP %d: %s", path, status, truncate(string(raw), 500))
+		return transferResponse{}, false, fmt.Errorf("doku sub-account %s returned HTTP %d: %s", path, status, truncate(string(raw), subAccountMaxErrorBytes))
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return transferResponse{}, false, fmt.Errorf("parse doku sub-account %s response: %w", path, err)
@@ -235,7 +331,7 @@ func (c *SubAccountClient) postJSON(ctx context.Context, path string, payload an
 		return err
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("doku sub-account %s returned HTTP %d: %s", path, status, truncate(string(raw), 500))
+		return fmt.Errorf("doku sub-account %s returned HTTP %d: %s", path, status, truncate(string(raw), subAccountMaxErrorBytes))
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("parse doku sub-account %s response: %w", path, err)
@@ -243,6 +339,8 @@ func (c *SubAccountClient) postJSON(ctx context.Context, path string, payload an
 	return nil
 }
 
+// call sends one signed Sub-Account request. The returned body has the token
+// and the secret key removed, so no caller can echo credentials into an error.
 func (c *SubAccountClient) call(ctx context.Context, path string, payload any) (int, []byte, error) {
 	token, err := c.accessToken(ctx)
 	if err != nil {
@@ -277,7 +375,7 @@ func (c *SubAccountClient) call(ctx context.Context, path string, payload any) (
 	if err != nil {
 		return 0, nil, fmt.Errorf("read doku sub-account %s response: %w", path, err)
 	}
-	return resp.StatusCode, raw, nil
+	return resp.StatusCode, redact(raw, token, c.cfg.SecretKey), nil
 }
 
 // accessToken returns the cached B2B token, fetching a new one only when the
@@ -371,7 +469,7 @@ func (req TransferInquiryRequest) body() transferBody {
 	return transferBody{
 		PartnerReferenceNo: req.PartnerReferenceNo,
 		Type:               subAccountTransferType,
-		Amount: transferAmount{
+		Amount: Money{
 			Value:    fmt.Sprintf("%d.00", req.Amount),
 			Currency: subAccountCurrency,
 		},
@@ -393,14 +491,14 @@ type tokenResponse struct {
 }
 
 type transferBody struct {
-	PartnerReferenceNo       string         `json:"partnerReferenceNo"`
-	Type                     string         `json:"type"`
-	Amount                   transferAmount `json:"amount"`
-	Channel                  string         `json:"channel"`
-	FromAccount              string         `json:"fromAccount"`
-	BeneficiaryBankCode      string         `json:"beneficiaryBankCode"`
-	BeneficiaryAccountNumber string         `json:"beneficiaryAccountNumber"`
-	Remark                   string         `json:"remark"`
+	PartnerReferenceNo       string `json:"partnerReferenceNo"`
+	Type                     string `json:"type"`
+	Amount                   Money  `json:"amount"`
+	Channel                  string `json:"channel"`
+	FromAccount              string `json:"fromAccount"`
+	BeneficiaryBankCode      string `json:"beneficiaryBankCode"`
+	BeneficiaryAccountNumber string `json:"beneficiaryAccountNumber"`
+	Remark                   string `json:"remark"`
 }
 
 type transferPaymentBody struct {
@@ -409,26 +507,71 @@ type transferPaymentBody struct {
 	BeneficiaryAccountName string `json:"beneficiaryAccountName"`
 }
 
-type transferAmount struct {
-	Value    string `json:"value"`
-	Currency string `json:"currency"`
-}
-
+// transferResponse covers the transfer-inquiry and transfer-payment responses
+// and the 409 replay body. Each endpoint fills the fields it documents.
 type transferResponse struct {
 	ReferenceNo            string `json:"referenceNo"`
 	PartnerReferenceNo     string `json:"partnerReferenceNo"`
 	BeneficiaryAccountName string `json:"beneficiaryAccountName"`
+	ReferenceNumber        string `json:"referenceNumber"`
+	TransactionDate        string `json:"transactionDate"`
+}
+
+type transactionStatusRequest struct {
+	PartnerReferenceNo string `json:"partnerReferenceNo"`
 }
 
 type transactionStatusResponse struct {
-	OriginalPartnerReferenceNo string `json:"originalPartnerReferenceNo"`
-	OriginalReferenceNo        string `json:"originalReferenceNo"`
-	LatestTransactionStatus    string `json:"latestTransactionStatus"`
-	TransactionStatusDesc      string `json:"transactionStatusDesc"`
+	PartnerReferenceNo      string              `json:"partnerReferenceNo"`
+	TransactionType         string              `json:"transactionType"`
+	LatestTransactionStatus string              `json:"latestTransactionStatus"`
+	LatestTransactionDesc   string              `json:"latestTransactionDesc"`
+	TransactionDate         string              `json:"transactionDate"`
+	Amount                  Money               `json:"amount"`
+	RefundHistory           []refundHistoryItem `json:"refundHistory"`
+}
+
+type refundHistoryItem struct {
+	RefundNo        string `json:"refundNo"`
+	RefundStatus    string `json:"refundStatus"`
+	TransactionDate string `json:"transactionDate"`
+	Reason          string `json:"reason"`
+	RefundAmount    Money  `json:"refundAmount"`
+}
+
+type balanceRequest struct {
+	ProfileID string `json:"profileId"`
 }
 
 type balanceResponse struct {
-	AvailableBalance transferAmount `json:"availableBalance"`
+	Name      string           `json:"name"`
+	ProfileID string           `json:"profileId"`
+	Accounts  []balanceAccount `json:"accounts"`
+}
+
+type balanceAccount struct {
+	Type      string         `json:"type"`
+	Currency  string         `json:"currency"`
+	AccountNo string         `json:"accountNo"`
+	Balance   balanceAmounts `json:"balance"`
+}
+
+type balanceAmounts struct {
+	Available string `json:"available"`
+	Reserved  string `json:"reserved"`
+}
+
+// redact removes the token and the secret key from a response body, so a
+// DOKU error that echoes either one cannot leak it into our errors or logs.
+func redact(raw []byte, secrets ...string) []byte {
+	out := raw
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		out = bytes.ReplaceAll(out, []byte(secret), []byte("[redacted]"))
+	}
+	return out
 }
 
 func firstNonEmpty(values ...string) string {
