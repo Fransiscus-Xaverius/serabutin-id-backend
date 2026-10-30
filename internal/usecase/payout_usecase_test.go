@@ -456,15 +456,19 @@ func (f *fakePaymentLookup) FindByBookingID(ctx context.Context, bookingID uint)
 }
 
 type fakeTransferGateway struct {
-	inquiries []doku.TransferInquiryRequest
-	payments  []doku.TransferPaymentRequest
-	statuses  []string
+	inquiries    []doku.TransferInquiryRequest
+	payments     []doku.TransferPaymentRequest
+	statuses     []string
+	balanceCalls int
 
 	inquiryResult *doku.TransferInquiryResult
 	inquiryErr    error
 	paymentResult *doku.TransferPaymentResult
 	paymentErr    error
+	statusResult  *doku.TransactionStatusResult
 	statusErr     error
+	balance       *doku.BalanceResult
+	balanceErr    error
 }
 
 func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
@@ -494,7 +498,24 @@ func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, partnerRefe
 	if f.statusErr != nil {
 		return nil, f.statusErr
 	}
-	return &doku.TransactionStatusResult{PartnerReferenceNo: partnerReferenceNo, LatestStatus: "PENDING"}, nil
+	if f.statusResult != nil {
+		return f.statusResult, nil
+	}
+	return &doku.TransactionStatusResult{PartnerReferenceNo: partnerReferenceNo, LatestStatus: doku.TransactionStatusPending}, nil
+}
+
+func (f *fakeTransferGateway) BalanceInquiry(ctx context.Context, profileID string) (*doku.BalanceResult, error) {
+	f.balanceCalls++
+	if f.balanceErr != nil {
+		return nil, f.balanceErr
+	}
+	if f.balance != nil {
+		return f.balance, nil
+	}
+	return &doku.BalanceResult{ProfileID: profileID, Accounts: []doku.BalanceAccount{
+		{Type: doku.BalanceAccountMerchantIDR, Currency: "IDR", Available: "1000000000.00"},
+		{Type: doku.BalanceAccountMerchantPendingIDR, Currency: "IDR", Available: "0.00"},
+	}}, nil
 }
 
 type releaseFixture struct {
@@ -540,6 +561,7 @@ func newReleaseFixture(t *testing.T) *releaseFixture {
 		Payments:    f.payments,
 		Gateway:     f.gateway,
 		FromAccount: "SRB-POOL",
+		ProfileID:   "HUB-1",
 	})
 	return f
 }
@@ -587,7 +609,7 @@ func TestPayoutUsecase_Release_PaymentConflictMarksSubmittedAndNeverResends(t *t
 	assert.Len(t, f.gateway.payments, 1)
 }
 
-func TestPayoutUsecase_Release_FailedPaymentRetriesWithTheSameKey(t *testing.T) {
+func TestPayoutUsecase_Release_PaymentErrorIsReconciledNotResent(t *testing.T) {
 	f := newReleaseFixture(t)
 	f.gateway.paymentErr = errors.New("connection reset")
 
@@ -598,15 +620,36 @@ func TestPayoutUsecase_Release_FailedPaymentRetriesWithTheSameKey(t *testing.T) 
 	assert.Equal(t, entity.PayoutStatusInquiry, stored.Status)
 	assert.Equal(t, "transfer payment failed", stored.LastError)
 
+	// The payment outcome is unknown. DOKU reports the transfer as pending,
+	// so the retry reconciles and does not send a second payment.
 	f.gateway.paymentErr = nil
 	payout, err := f.uc.Release(context.Background(), 42)
 	require.NoError(t, err)
 	assert.Equal(t, entity.PayoutStatusSubmitted, payout.Status)
 	assert.Empty(t, payout.LastError)
-	require.Len(t, f.gateway.payments, 2)
-	assert.Equal(t, "PO-42", f.gateway.payments[1].PartnerReferenceNo)
-	assert.Equal(t, "INQ-1", f.gateway.payments[1].ReferenceNo)
+	assert.Equal(t, []string{"PO-42"}, f.gateway.statuses)
+	assert.Len(t, f.gateway.payments, 1)
 	assert.Len(t, f.payouts.rows, 1)
+}
+
+func TestPayoutUsecase_Release_UnreadableStatusBlocksAnyResend(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.paymentErr = errors.New("connection reset")
+	_, err := f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_TRANSFER_FAILED")
+
+	f.gateway.paymentErr = nil
+	f.gateway.statusErr = errors.New("status endpoint unavailable")
+	inquiriesBefore := len(f.gateway.inquiries)
+	_, err = f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_TRANSFER_FAILED")
+
+	assert.Len(t, f.gateway.inquiries, inquiriesBefore)
+	assert.Len(t, f.gateway.payments, 1)
+	stored, err := f.payouts.FindByBookingID(context.Background(), 42)
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutStatusInquiry, stored.Status)
+	assert.Equal(t, "transaction status failed", stored.LastError)
 }
 
 func TestPayoutUsecase_Release_SubmittedPayoutIsReturnedUnchangedWithoutAnyProviderCall(t *testing.T) {
@@ -758,4 +801,241 @@ func TestPayoutUsecase_Release_RefusesAnUnpaidOrUnfinishedBooking(t *testing.T) 
 			assert.Empty(t, f.payouts.rows)
 		})
 	}
+}
+
+func TestPayoutUsecase_Release_PaymentConflictMapsTheDOKUStatus(t *testing.T) {
+	cases := []struct {
+		code       string
+		want       string
+		reasonWith string
+	}{
+		{code: doku.TransactionStatusSuccess, want: entity.PayoutStatusPaid},
+		{code: doku.TransactionStatusPending, want: entity.PayoutStatusSubmitted},
+		{code: doku.TransactionStatusRefunded, want: entity.PayoutStatusFailed, reasonWith: "refunded"},
+		{code: doku.TransactionStatusCanceled, want: entity.PayoutStatusFailed, reasonWith: "canceled"},
+		{code: doku.TransactionStatusFailed, want: entity.PayoutStatusFailed, reasonWith: "failed"},
+	}
+	for _, tc := range cases {
+		t.Run("status "+tc.code, func(t *testing.T) {
+			f := newReleaseFixture(t)
+			f.gateway.paymentResult = &doku.TransferPaymentResult{ReferenceNo: "PAY-ORIG", ReferenceNumber: "REF-7", PartnerReferenceNo: "PO-42", Replayed: true}
+			f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: tc.code, LatestStatusDesc: "desc " + tc.code}
+
+			payout, err := f.uc.Release(context.Background(), 42)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.want, payout.Status)
+			assert.Equal(t, "PAY-ORIG", payout.DokuReferenceNo)
+			assert.Equal(t, "REF-7", payout.DokuReferenceNumber)
+			assert.Equal(t, []string{"PO-42"}, f.gateway.statuses)
+			assert.Len(t, f.gateway.payments, 1)
+			switch tc.want {
+			case entity.PayoutStatusPaid:
+				assert.NotNil(t, payout.PaidAt)
+				assert.Empty(t, payout.LastError)
+			case entity.PayoutStatusFailed:
+				assert.Nil(t, payout.PaidAt)
+				assert.Contains(t, payout.LastError, tc.reasonWith)
+				assert.Contains(t, payout.LastError, "status "+tc.code)
+			default:
+				assert.Nil(t, payout.PaidAt)
+				assert.Empty(t, payout.LastError)
+			}
+			if tc.want != entity.PayoutStatusFailed {
+				_, err := f.uc.Release(context.Background(), 42)
+				require.NoError(t, err)
+				assert.Len(t, f.gateway.payments, 1)
+				assert.Len(t, f.gateway.inquiries, 1)
+			}
+		})
+	}
+}
+
+func TestPayoutUsecase_Release_ConflictWithAnUnknownStatusStaysSubmitted(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.paymentResult = &doku.TransferPaymentResult{ReferenceNo: "PAY-ORIG", PartnerReferenceNo: "PO-42", Replayed: true}
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: "99"}
+
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	assert.Equal(t, entity.PayoutStatusSubmitted, payout.Status)
+	assert.Equal(t, "transaction status check failed", payout.LastError)
+	assert.Len(t, f.gateway.payments, 1)
+}
+
+func TestPayoutUsecase_Release_FailedPayoutStillFailedIsResentUnderTheSameKey(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.paymentResult = &doku.TransferPaymentResult{ReferenceNo: "PAY-ORIG", PartnerReferenceNo: "PO-42", Replayed: true}
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: doku.TransactionStatusFailed, LatestStatusDesc: "rejected"}
+	_, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	f.gateway.paymentResult = nil
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	assert.Equal(t, entity.PayoutStatusSubmitted, payout.Status)
+	assert.Empty(t, payout.LastError)
+	require.Len(t, f.gateway.inquiries, 2)
+	require.Len(t, f.gateway.payments, 2)
+	assert.Equal(t, "PO-42", f.gateway.inquiries[1].PartnerReferenceNo)
+	assert.Equal(t, "PO-42", f.gateway.payments[1].PartnerReferenceNo)
+	assert.Len(t, f.payouts.rows, 1)
+}
+
+func TestPayoutUsecase_Release_FailedPayoutReconciledToPendingIsNotResent(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.paymentResult = &doku.TransferPaymentResult{ReferenceNo: "PAY-ORIG", PartnerReferenceNo: "PO-42", Replayed: true}
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: doku.TransactionStatusFailed}
+	_, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	f.gateway.paymentResult = nil
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: doku.TransactionStatusPending}
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	assert.Equal(t, entity.PayoutStatusSubmitted, payout.Status)
+	assert.Len(t, f.gateway.inquiries, 1)
+	assert.Len(t, f.gateway.payments, 1)
+}
+
+func TestPayoutUsecase_Release_FailedPayoutWithAnUnreadableStatusIsNotResent(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.paymentResult = &doku.TransferPaymentResult{ReferenceNo: "PAY-ORIG", PartnerReferenceNo: "PO-42", Replayed: true}
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: doku.TransactionStatusFailed}
+	_, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	f.gateway.paymentResult = nil
+	f.gateway.statusResult = nil
+	f.gateway.statusErr = errors.New("status endpoint unavailable")
+	_, err = f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_TRANSFER_FAILED")
+
+	assert.Len(t, f.gateway.inquiries, 1)
+	assert.Len(t, f.gateway.payments, 1)
+}
+
+func TestPayoutUsecase_Release_ReplayedInquiryWithAFailedStatusSendsNoPayment(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.inquiryResult = &doku.TransferInquiryResult{ReferenceNo: "INQ-1", PartnerReferenceNo: "PO-42", BeneficiaryAccountName: "SITI RAHAYU", Replayed: true}
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: doku.TransactionStatusFailed, LatestStatusDesc: "rejected"}
+
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	assert.Equal(t, entity.PayoutStatusFailed, payout.Status)
+	assert.Contains(t, payout.LastError, "status 06")
+	assert.Empty(t, f.gateway.payments)
+}
+
+func TestPayoutUsecase_Release_ReplayedInquiryWithAPendingStatusSendsNoPayment(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.inquiryResult = &doku.TransferInquiryResult{ReferenceNo: "INQ-1", PartnerReferenceNo: "PO-42", BeneficiaryAccountName: "SITI RAHAYU", Replayed: true}
+
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	assert.Equal(t, entity.PayoutStatusSubmitted, payout.Status)
+	assert.Empty(t, f.gateway.payments)
+}
+
+func TestPayoutUsecase_Release_RefusesWhenTheSettledBalanceIsBelowTheAmount(t *testing.T) {
+	cases := []struct {
+		name      string
+		available string
+		paid      bool
+	}{
+		{name: "one cent short", available: "149999.99", paid: false},
+		{name: "exactly the amount", available: "150000.00", paid: true},
+		{name: "without decimals", available: "150000", paid: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReleaseFixture(t)
+			f.gateway.balance = settledBalance(tc.available, "0.00")
+
+			_, err := f.uc.Release(context.Background(), 42)
+			if tc.paid {
+				require.NoError(t, err)
+				assert.Len(t, f.gateway.payments, 1)
+				return
+			}
+			requireDomainCode(t, err, "PAYOUT_INSUFFICIENT_SETTLED_BALANCE")
+			assert.Empty(t, f.gateway.inquiries)
+			assert.Empty(t, f.gateway.payments)
+		})
+	}
+}
+
+func TestPayoutUsecase_Release_HeldBalanceNeverCountsAsSettled(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.balance = settledBalance("0.00", "999999999.00")
+
+	_, err := f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_INSUFFICIENT_SETTLED_BALANCE")
+	assert.Empty(t, f.gateway.inquiries)
+}
+
+func TestPayoutUsecase_Release_RefusesWhenTheSettledAccountIsMissing(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.balance = &doku.BalanceResult{ProfileID: "HUB-1", Accounts: []doku.BalanceAccount{
+		{Type: doku.BalanceAccountMerchantPendingIDR, Currency: "IDR", Available: "999999999.00"},
+	}}
+
+	_, err := f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_SETTLEMENT_UNAVAILABLE")
+	assert.Empty(t, f.gateway.inquiries)
+	assert.Empty(t, f.gateway.payments)
+}
+
+func TestPayoutUsecase_Release_RefusesWhenTheBalanceCannotBeRead(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.balanceErr = errors.New("balance endpoint unavailable")
+
+	_, err := f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_SETTLEMENT_UNAVAILABLE")
+	assert.Empty(t, f.gateway.inquiries)
+}
+
+func TestPayoutUsecase_Release_RefusesAMalformedSettledBalance(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.balance = settledBalance("1,000,000.00", "0.00")
+
+	_, err := f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_SETTLEMENT_UNAVAILABLE")
+	assert.Empty(t, f.gateway.inquiries)
+}
+
+func TestSettledCents(t *testing.T) {
+	cases := map[string]struct {
+		cents int64
+		ok    bool
+	}{
+		"150000":    {15000000, true},
+		"150000.5":  {15000050, true},
+		"149999.99": {14999999, true},
+		"0.00":      {0, true},
+		"":          {0, false},
+		"-1":        {0, false},
+		"1,000":     {0, false},
+		"1.2.3":     {0, false},
+		"1.000":     {0, false},
+		".50":       {0, false},
+		"12abc":     {0, false},
+	}
+	for value, want := range cases {
+		cents, ok := settledCents(value)
+		assert.Equal(t, want.ok, ok, value)
+		assert.Equal(t, want.cents, cents, value)
+	}
+}
+
+func settledBalance(settled, pending string) *doku.BalanceResult {
+	return &doku.BalanceResult{ProfileID: "HUB-1", Accounts: []doku.BalanceAccount{
+		{Type: doku.BalanceAccountMerchantIDR, Currency: "IDR", Available: settled},
+		{Type: doku.BalanceAccountMerchantPendingIDR, Currency: "IDR", Available: pending},
+	}}
 }
