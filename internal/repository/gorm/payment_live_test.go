@@ -147,7 +147,47 @@ func TestLivePayment_DuplicateIdempotencyKeyIsRejected(t *testing.T) {
 		IdempotencyKey:     "SRB-42-7",
 		RequestFingerprint: "fp-1",
 	}
-	require.Error(t, repo.Create(ctx, second), "one key may belong to one payment row only")
+	err := repo.Create(ctx, second)
+	require.Error(t, err, "one key may belong to one payment row only")
+
+	// The failure is the unique violation of the idempotency key index and
+	// not some other error: the duplicate key is what the database
+	// reports.
+	assert.Contains(t, err.Error(), "duplicated key", "the repository must surface the unique violation")
+
+	// Exactly one row holds the key: the rejected payment was not stored.
+	var rows int64
+	require.NoError(t, db.Model(&model.PaymentModel{}).
+		Where("idempotency_key = ?", "SRB-42-7").Count(&rows).Error)
+	assert.Equal(t, int64(1), rows, "the rejected payment must not be stored")
+
+	// The database itself names the violation: SQLSTATE 23505 (unique
+	// violation) on the idempotency key index. The statement goes to the
+	// driver directly, because GORM translates the error and drops the
+	// constraint name.
+	indexName := liveIdempotencyKeyIndex(t, db)
+	sqlDB, dbErr := db.DB()
+	require.NoError(t, dbErr)
+	_, rawErr := sqlDB.ExecContext(ctx,
+		`INSERT INTO payments (booking_id, invoice_number, amount, currency, channel, status, provider, idempotency_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		secondBookingID, "SRB-43-7-2", 155000, "IDR", "qris", entity.PaymentStatusPending, "doku", "SRB-42-7",
+	)
+	require.Error(t, rawErr)
+	assert.Contains(t, rawErr.Error(), "23505", "a duplicate key must be a unique violation")
+	assert.Contains(t, rawErr.Error(), indexName, "the violation must come from the idempotency key index")
+}
+
+// liveIdempotencyKeyIndex returns the name of the index on the idempotency
+// key column of the payments table.
+func liveIdempotencyKeyIndex(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var name string
+	require.NoError(t, db.Raw(
+		`SELECT indexname FROM pg_indexes WHERE tablename = 'payments' AND indexname LIKE '%idempotency_key%'`,
+	).Scan(&name).Error)
+	require.NotEmpty(t, name, "the payments table must have an index on the idempotency key")
+	return name
 }
 
 // legacyPaymentModel is the payments table as it looked before the
@@ -175,6 +215,8 @@ func (legacyPaymentModel) TableName() string { return "payments" }
 
 func TestLivePayment_MigrationAddsTheKeyToATableThatAlreadyHoldsPayments(t *testing.T) {
 	db := setupBountyLiveDB(t)
+	ctx := context.Background()
+	repo := NewPaymentRepository(db)
 
 	// Rebuild the payments table as it looked before the idempotency
 	// columns existed, with two payments already in it.
@@ -195,20 +237,54 @@ func TestLivePayment_MigrationAddsTheKeyToATableThatAlreadyHoldsPayments(t *test
 		require.NoError(t, db.Create(legacy).Error)
 	}
 
-	// The migration must succeed: the key column is nullable, so the
-	// existing rows get NULL and the unique index can be created. A
-	// non-nullable column would fill every row with '' and the index
-	// creation would fail here.
+	// The migration itself must succeed on a table that already holds
+	// payments. A key column that is NOT NULL with a default would give
+	// every existing row the same value, and the unique index could then
+	// not be created; a NOT NULL column without a default could not even
+	// be added to a table that holds rows.
 	require.NoError(t, db.AutoMigrate(&model.PaymentModel{}))
 
+	// The payments that existed before the migration keep a NULL key.
 	var nulls int64
 	require.NoError(t, db.Model(&model.PaymentModel{}).
 		Where("idempotency_key IS NULL").Count(&nulls).Error)
 	assert.Equal(t, int64(2), nulls, "the payments that existed before the migration keep a NULL key")
 
+	// The index on the key is unique.
+	indexName := liveIdempotencyKeyIndex(t, db)
 	var indexDef string
 	require.NoError(t, db.Raw(
-		`SELECT indexdef FROM pg_indexes WHERE tablename = 'payments' AND indexname LIKE '%idempotency_key%'`,
+		`SELECT indexdef FROM pg_indexes WHERE tablename = 'payments' AND indexname = ?`, indexName,
 	).Scan(&indexDef).Error)
 	assert.Contains(t, indexDef, "UNIQUE", "the idempotency key must be unique")
+
+	// The decisive part: a payment written after the migration without a
+	// key must still be storable. The key column is nullable, so such a
+	// row holds NULL and two of them can live next to each other.
+	//
+	// A column that is not nullable - or one that stores '' for an unset
+	// key - would give every keyless payment the same value, and the
+	// unique index would reject the second one. A migration that only
+	// checks the existing rows cannot see that: ADD COLUMN without NOT
+	// NULL leaves those rows NULL as well.
+	thirdBookingID := createLiveBooking(t, db)
+	fourthBookingID := createLiveBooking(t, db)
+	for _, bookingID := range []uint{thirdBookingID, fourthBookingID} {
+		keyless := &entity.Payment{
+			BookingID:     bookingID,
+			InvoiceNumber: fmt.Sprintf("SRB-%d-7-2", bookingID),
+			Amount:        155000,
+			Currency:      "IDR",
+			Channel:       "qris",
+			Status:        entity.PaymentStatusPending,
+			Provider:      "doku",
+		}
+		require.NoError(t, repo.Create(ctx, keyless),
+			"a payment without an idempotency key must be storable after the migration")
+	}
+
+	var keyless int64
+	require.NoError(t, db.Model(&model.PaymentModel{}).
+		Where("idempotency_key IS NULL").Count(&keyless).Error)
+	assert.Equal(t, int64(4), keyless, "every payment without a key holds NULL, never ''")
 }
