@@ -101,7 +101,7 @@ func main() {
 	// before the column (AutoMigrate below only adds it on fresh tables).
 	db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_blocked boolean NOT NULL DEFAULT false`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_chat_blocked ON users (chat_blocked)`)
-	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.PaymentModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}, &model.ReimbursementModel{}, &model.PayoutMarkModel{}, &model.KillSwitchModel{}, &model.PayoutAccountModel{}); err != nil {
+	if err := db.AutoMigrate(&model.UserModel{}, &model.ServiceModel{}, &model.ServiceImageModel{}, &model.ServiceAddOnModel{}, &model.BookingModel{}, &model.BookingAddOnModel{}, &model.PaymentModel{}, &model.ReviewModel{}, &model.BidModel{}, &model.NotificationModel{}, &model.CancellationModel{}, &model.AuditLogModel{}, &model.ReportModel{}, &model.BroadcastModel{}, &model.BannerModel{}, &model.CategoryModel{}, &model.ReimbursementModel{}, &model.PayoutMarkModel{}, &model.KillSwitchModel{}, &model.PayoutAccountModel{}, &model.PayoutModel{}); err != nil {
 		logger.Log.Fatal().Err(err).Msg("failed to run auto migration")
 	}
 	// AutoMigrate never turns an existing index unique, so databases created by
