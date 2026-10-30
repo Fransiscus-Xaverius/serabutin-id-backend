@@ -27,7 +27,7 @@
 
 ## Part A — Collection idempotency
 
-### Task A1: Key derivation and request fingerprint
+### Task 1 (Part A): Key derivation and request fingerprint
 
 **Files:**
 - Create: `internal/infrastructure/idempotency/keys.go`
@@ -127,7 +127,7 @@ git commit -m "feat(payments): derive idempotency keys and request fingerprints"
 
 ---
 
-### Task A2: Persist the key and fingerprint on the payment
+### Task 2 (Part A): Persist the key and fingerprint on the payment
 
 **Files:**
 - Modify: `internal/domain/entity/payment.go`
@@ -138,7 +138,8 @@ git commit -m "feat(payments): derive idempotency keys and request fingerprints"
 
 **Interfaces:**
 - Produces on `entity.Payment`: `IdempotencyKey string`, `RequestFingerprint string`, `Replayed bool`.
-- New repository method: `FindByIdempotencyKey(ctx, key string) (*entity.Payment, error)`.
+- New repository method: `FindByIdempotencyKey(ctx, key string) (*entity.Payment, error)` — added to the `repository.PaymentRepository` **interface** (not only the concrete implementation), with the two existing fakes in `internal/usecase/payment_usecase_test.go` and `internal/handler/payment_handler_test.go` updated to satisfy it.
+- New repository methods for Task 3: `UpdateIdempotency(ctx, paymentID uint, key, fingerprint string) error` and `MarkReplayed(ctx, paymentID uint, replayed bool) error`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -206,12 +207,14 @@ git commit -m "feat(payments): persist the idempotency key and fingerprint per p
 
 ---
 
-### Task A3: The DOKU client sends a stable key and reads a 409 as a replay
+### Task 3 (Part A): The DOKU client sends a stable key, and the usecase supplies it
 
 **Files:**
 - Modify: `internal/infrastructure/payment/gateway.go`
 - Modify: `internal/infrastructure/doku/client.go`
+- Modify: `internal/usecase/payment_usecase.go`
 - Test: `internal/infrastructure/doku/client_test.go`
+- Test: `internal/usecase/payment_usecase_test.go`
 
 **Interfaces:**
 - `payment.CreateCheckoutRequest` gains `RequestID string` — the idempotency key to send as the `Request-Id` header.
@@ -348,16 +351,13 @@ git commit -m "feat(payments): send a stable request id and read a 409 checkout 
 
 ---
 
-### Task A4: The payment usecase writes the key before the call and can retry
-
-**Files:**
-- Modify: `internal/usecase/payment_usecase.go`
-- Test: `internal/usecase/payment_usecase_test.go`
 
 **Interfaces:**
 - `PaymentUsecase.CreateCheckout(ctx, booking, channel)` now derives `SRB-<bookingID>-<paymentID>` from the persisted payment row, stores it with a request fingerprint **before** calling the gateway, and passes it as `RequestID`.
 - New: `PaymentUsecase.RetryCheckout(ctx, bookingID uint, channel string) (*entity.Payment, error)` — reuses the existing payment row, therefore the same key and fingerprint.
 
+
+#### Steps (the client and the usecase in one commit)
 - [ ] **Step 1: Write the failing tests**
 
 Add to `internal/usecase/payment_usecase_test.go`:
@@ -420,13 +420,15 @@ In `internal/usecase/payment_usecase.go`:
 - After the payment row is created (`paymentRepo.Create`), compute:
   ```go
   	key := idempotency.CollectionKey(booking.ID, record.ID)
-  	fingerprint := idempotency.Fingerprint(key, canonicalCheckoutRequest(record, channel))
+  	fingerprint := idempotency.Fingerprint(key, idempotency.CanonicalPaymentRequest(record.InvoiceNumber, record.Amount, record.Currency, channel, uc.expiryMinutes))
   ```
-  where `canonicalCheckoutRequest` is a small helper that builds a stable string from the fields that define the charge (invoice number, amount, currency, channel, expiry minutes) — for example
-  `fmt.Sprintf("%s|%d|%s|%s|%d", record.InvoiceNumber, record.Amount, record.Currency, channel, uc.expiryMinutes)`.
-  Persist both on the row (a repository update) **before** the gateway call.
+  Use the canonical-string helper from the idempotency package (`idempotency.CanonicalPaymentRequest`), not a second local copy.
+  Persist both on the row **before** the gateway call, with the repository method
+  `UpdateIdempotency(ctx, paymentID uint, key, fingerprint string) error` (added to the
+  `repository.PaymentRepository` interface, with the two existing fakes updated).
 - Pass `RequestID: key` in the `payment.CreateCheckoutRequest`.
-- After a successful call, set `record.Replayed = result.Replayed` and persist it.
+- After a successful call, set `record.Replayed = result.Replayed` and persist it with
+  `MarkReplayed(ctx, paymentID uint, replayed bool) error` (also added to the interface).
 - Add `RetryCheckout(ctx, bookingID, channel)`:
   - find the booking's payment row; if it is already `pending` with a checkout URL, return it unchanged (nothing to do);
   - if it is `expired`, refuse (`PAYMENT_EXPIRED`);
@@ -447,7 +449,7 @@ git commit -m "feat(payments): persist the idempotency key before the checkout a
 
 ---
 
-### Task A5: Booking creation honours an Idempotency-Key header
+### Task 4 (Part A): Booking creation honours an Idempotency-Key header
 
 **Files:**
 - Modify: `internal/domain/entity/booking.go`
@@ -495,7 +497,7 @@ git commit -m "feat(bookings): honour an Idempotency-Key header so a double subm
 
 ---
 
-### Task A6: The frontend sends the key and can retry a failed payment
+### Task 5 (Part A): The frontend sends the key and can retry a failed payment
 
 **Files:**
 - Modify: `src/services/booking.service.js`
@@ -569,7 +571,7 @@ git commit -m "feat(booking): send an idempotency key and offer a safe payment r
 
 ## Part B — Withdrawal idempotency
 
-### Task B1: The payouts ledger
+### Task 6 (Part B): The payouts ledger
 
 **Files:**
 - Create: `internal/domain/entity/payout.go`
@@ -612,7 +614,7 @@ git commit -m "feat(payouts): add the payouts ledger with one row per booking"
 
 ---
 
-### Task B2: The DOKU Sub-Account client (B2B token, HMAC-SHA512, transfer)
+### Task 7 (Part B): The DOKU Sub-Account client (B2B token, HMAC-SHA512, transfer)
 
 **Files:**
 - Create: `internal/infrastructure/doku/subaccount.go`
@@ -668,7 +670,7 @@ git commit -m "feat(doku): add the Sub-Account client with B2B token and SHA-512
 
 ---
 
-### Task B3: The payout usecase — one payout per booking, replay-aware
+### Task 8 (Part B): The payout usecase — one payout per booking, replay-aware
 
 **Files:**
 - Create: `internal/usecase/payout_usecase.go`
@@ -730,7 +732,7 @@ git commit -m "feat(payouts): release a Mitra payout exactly once per booking"
 
 ---
 
-### Task B4: The admin release endpoint and the transfer webhook
+### Task 9 (Part B): The admin release endpoint and the transfer webhook
 
 **Files:**
 - Create: `internal/handler/payout_handler.go`
@@ -769,7 +771,7 @@ git commit -m "feat(payouts): add the admin release endpoint and the transfer we
 
 ---
 
-### Task B5: Contract and documentation
+### Task 10 (Part B): Contract and documentation
 
 **Files:**
 - Modify: `serabutin-technical-documentation/api-contracts/openapi.yaml`
