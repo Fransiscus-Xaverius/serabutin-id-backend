@@ -67,6 +67,16 @@ type Payment struct {
 	ExpiresAt         *time.Time
 	PaidAt            *time.Time
 	LastError         string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// IdempotencyKey is the key this attempt is sent to the provider with.
+	// It is derived from the persisted row, so a retry reuses it. It is
+	// empty while the attempt has not been keyed yet.
+	IdempotencyKey string
+	// RequestFingerprint identifies the request the key was used for. It
+	// is a keyed digest, so it holds no secret material.
+	RequestFingerprint string
+	// Replayed reports that the provider answered this attempt with the
+	// original result of an earlier one instead of creating a new one.
+	Replayed  bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }

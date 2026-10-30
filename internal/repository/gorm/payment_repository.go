@@ -57,6 +57,21 @@ func (r *PaymentRepository) FindByInvoiceNumber(ctx context.Context, invoiceNumb
 	return toPaymentEntity(&m), nil
 }
 
+// FindByIdempotencyKey returns the payment that carries the key. The key is
+// derived from the row itself, so a retry of that row finds it here and can
+// continue with the same key instead of creating a second attempt.
+func (r *PaymentRepository) FindByIdempotencyKey(ctx context.Context, key string) (*entity.Payment, error) {
+	var m model.PaymentModel
+	err := r.db.WithContext(ctx).Where("idempotency_key = ?", key).First(&m).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, paymentNotFoundError()
+		}
+		return nil, paymentDBError(err)
+	}
+	return toPaymentEntity(&m), nil
+}
+
 func (r *PaymentRepository) UpdateCheckout(ctx context.Context, id uint, checkout repository.PaymentCheckout) error {
 	updates := map[string]interface{}{
 		"payment_url":         checkout.PaymentURL,
@@ -279,44 +294,69 @@ func lockPaymentAndBooking(tx *gorm.DB, invoiceNumber string) (*model.PaymentMod
 
 func toPaymentModel(payment *entity.Payment) *model.PaymentModel {
 	return &model.PaymentModel{
-		ID:                payment.ID,
-		BookingID:         payment.BookingID,
-		InvoiceNumber:     payment.InvoiceNumber,
-		Amount:            payment.Amount,
-		Currency:          payment.Currency,
-		Channel:           payment.Channel,
-		Status:            payment.Status,
-		Provider:          payment.Provider,
-		ProviderRequestID: payment.ProviderRequestID,
-		ProviderSessionID: payment.ProviderSessionID,
-		PaymentURL:        payment.PaymentURL,
-		ExpiresAt:         payment.ExpiresAt,
-		PaidAt:            payment.PaidAt,
-		LastError:         payment.LastError,
-		CreatedAt:         payment.CreatedAt,
-		UpdatedAt:         payment.UpdatedAt,
+		ID:                 payment.ID,
+		BookingID:          payment.BookingID,
+		InvoiceNumber:      payment.InvoiceNumber,
+		Amount:             payment.Amount,
+		Currency:           payment.Currency,
+		Channel:            payment.Channel,
+		Status:             payment.Status,
+		Provider:           payment.Provider,
+		ProviderRequestID:  payment.ProviderRequestID,
+		ProviderSessionID:  payment.ProviderSessionID,
+		PaymentURL:         payment.PaymentURL,
+		ExpiresAt:          payment.ExpiresAt,
+		PaidAt:             payment.PaidAt,
+		LastError:          payment.LastError,
+		IdempotencyKey:     nullableString(payment.IdempotencyKey),
+		RequestFingerprint: payment.RequestFingerprint,
+		Replayed:           payment.Replayed,
+		CreatedAt:          payment.CreatedAt,
+		UpdatedAt:          payment.UpdatedAt,
 	}
 }
 
 func toPaymentEntity(m *model.PaymentModel) *entity.Payment {
 	return &entity.Payment{
-		ID:                m.ID,
-		BookingID:         m.BookingID,
-		InvoiceNumber:     m.InvoiceNumber,
-		Amount:            m.Amount,
-		Currency:          m.Currency,
-		Channel:           m.Channel,
-		Status:            m.Status,
-		Provider:          m.Provider,
-		ProviderRequestID: m.ProviderRequestID,
-		ProviderSessionID: m.ProviderSessionID,
-		PaymentURL:        m.PaymentURL,
-		ExpiresAt:         m.ExpiresAt,
-		PaidAt:            m.PaidAt,
-		LastError:         m.LastError,
-		CreatedAt:         m.CreatedAt,
-		UpdatedAt:         m.UpdatedAt,
+		ID:                 m.ID,
+		BookingID:          m.BookingID,
+		InvoiceNumber:      m.InvoiceNumber,
+		Amount:             m.Amount,
+		Currency:           m.Currency,
+		Channel:            m.Channel,
+		Status:             m.Status,
+		Provider:           m.Provider,
+		ProviderRequestID:  m.ProviderRequestID,
+		ProviderSessionID:  m.ProviderSessionID,
+		PaymentURL:         m.PaymentURL,
+		ExpiresAt:          m.ExpiresAt,
+		PaidAt:             m.PaidAt,
+		LastError:          m.LastError,
+		IdempotencyKey:     stringValue(m.IdempotencyKey),
+		RequestFingerprint: m.RequestFingerprint,
+		Replayed:           m.Replayed,
+		CreatedAt:          m.CreatedAt,
+		UpdatedAt:          m.UpdatedAt,
 	}
+}
+
+// nullableString maps an empty string to a nil pointer, so an unset
+// idempotency key is stored as NULL. Every NULL is distinct for a unique
+// index, which keeps the index creatable on a database that already holds
+// payments.
+func nullableString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+// stringValue maps a NULL column back to the empty string of the entity.
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func paymentBookingEntity(m *model.BookingModel) *entity.Booking {
