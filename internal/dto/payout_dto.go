@@ -47,3 +47,17 @@ type PayoutAccountResponse struct {
 	NameMismatch bool   `json:"name_mismatch"`
 	UpdatedAt    string `json:"updated_at"`
 }
+
+// PayoutReleaseResponse is the payout of a booking as the admin sees it. It
+// carries the last four digits of the destination, never the full number.
+type PayoutReleaseResponse struct {
+	ID                 uint   `json:"id"`
+	BookingID          uint   `json:"booking_id"`
+	Status             string `json:"status"`
+	Amount             int64  `json:"amount"`
+	Currency           string `json:"currency"`
+	PartnerReferenceNo string `json:"partner_reference_no"`
+	BankCode           string `json:"bank_code"`
+	AccountLast4       string `json:"account_last4"`
+	Replayed           bool   `json:"replayed"`
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/dto"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/doku"
 )
 
 type fakeSecretBox struct{}
@@ -374,4 +375,387 @@ func TestPayoutUsecase_Get_ReturnsStoredAccountWithoutDecrypting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "7890", account.AccountLast4)
 	assert.Equal(t, "enc:1234567890", account.AccountNumberEncrypted)
+}
+
+type fakePayoutRepo struct {
+	rows   map[uint]*entity.Payout
+	nextID uint
+}
+
+func (f *fakePayoutRepo) find(match func(*entity.Payout) bool) (*entity.Payout, error) {
+	for _, row := range f.rows {
+		if match(row) {
+			copied := *row
+			return &copied, nil
+		}
+	}
+	return nil, apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")
+}
+
+func (f *fakePayoutRepo) Create(ctx context.Context, p *entity.Payout) error {
+	if f.rows == nil {
+		f.rows = map[uint]*entity.Payout{}
+	}
+	for _, row := range f.rows {
+		if row.BookingID == p.BookingID || row.PartnerReferenceNo == p.PartnerReferenceNo {
+			return apperror.NewDomainError(apperror.ErrAlreadyExists, "PAYOUT_DUPLICATE", "a payout already exists for this booking or reference")
+		}
+	}
+	f.nextID++
+	p.ID = f.nextID
+	copied := *p
+	f.rows[p.ID] = &copied
+	return nil
+}
+
+func (f *fakePayoutRepo) FindByID(ctx context.Context, id uint) (*entity.Payout, error) {
+	return f.find(func(p *entity.Payout) bool { return p.ID == id })
+}
+
+func (f *fakePayoutRepo) FindByBookingID(ctx context.Context, bookingID uint) (*entity.Payout, error) {
+	return f.find(func(p *entity.Payout) bool { return p.BookingID == bookingID })
+}
+
+func (f *fakePayoutRepo) FindByPartnerReferenceNo(ctx context.Context, partnerReferenceNo string) (*entity.Payout, error) {
+	return f.find(func(p *entity.Payout) bool { return p.PartnerReferenceNo == partnerReferenceNo })
+}
+
+func (f *fakePayoutRepo) Update(ctx context.Context, p *entity.Payout) error {
+	if _, ok := f.rows[p.ID]; !ok {
+		return apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")
+	}
+	copied := *p
+	f.rows[p.ID] = &copied
+	return nil
+}
+
+type fakeBookingLookup struct {
+	rows map[uint]*entity.Booking
+}
+
+func (f *fakeBookingLookup) FindByID(ctx context.Context, id uint) (*entity.Booking, error) {
+	b, ok := f.rows[id]
+	if !ok {
+		return nil, apperror.NewDomainError(apperror.ErrBookingNotFound, "BOOKING_NOT_FOUND", "booking not found")
+	}
+	copied := *b
+	return &copied, nil
+}
+
+type fakePaymentLookup struct {
+	byBooking map[uint]*entity.Payment
+}
+
+func (f *fakePaymentLookup) FindByBookingID(ctx context.Context, bookingID uint) (*entity.Payment, error) {
+	p, ok := f.byBooking[bookingID]
+	if !ok {
+		return nil, apperror.NewDomainError(apperror.ErrNotFound, "PAYMENT_NOT_FOUND", "payment not found")
+	}
+	copied := *p
+	return &copied, nil
+}
+
+type fakeTransferGateway struct {
+	inquiries []doku.TransferInquiryRequest
+	payments  []doku.TransferPaymentRequest
+	statuses  []string
+
+	inquiryResult *doku.TransferInquiryResult
+	inquiryErr    error
+	paymentResult *doku.TransferPaymentResult
+	paymentErr    error
+	statusErr     error
+}
+
+func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
+	f.inquiries = append(f.inquiries, req)
+	if f.inquiryErr != nil {
+		return nil, f.inquiryErr
+	}
+	if f.inquiryResult != nil {
+		return f.inquiryResult, nil
+	}
+	return &doku.TransferInquiryResult{ReferenceNo: "INQ-1", PartnerReferenceNo: req.PartnerReferenceNo, BeneficiaryAccountName: "SITI RAHAYU"}, nil
+}
+
+func (f *fakeTransferGateway) TransferPayment(ctx context.Context, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error) {
+	f.payments = append(f.payments, req)
+	if f.paymentErr != nil {
+		return nil, f.paymentErr
+	}
+	if f.paymentResult != nil {
+		return f.paymentResult, nil
+	}
+	return &doku.TransferPaymentResult{ReferenceNo: "PAY-1", PartnerReferenceNo: req.PartnerReferenceNo}, nil
+}
+
+func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, partnerReferenceNo string) (*doku.TransactionStatusResult, error) {
+	f.statuses = append(f.statuses, partnerReferenceNo)
+	if f.statusErr != nil {
+		return nil, f.statusErr
+	}
+	return &doku.TransactionStatusResult{PartnerReferenceNo: partnerReferenceNo, LatestStatus: "PENDING"}, nil
+}
+
+type releaseFixture struct {
+	uc       *PayoutUsecase
+	payouts  *fakePayoutRepo
+	accounts *fakePayoutAccountRepo
+	bookings *fakeBookingLookup
+	payments *fakePaymentLookup
+	gateway  *fakeTransferGateway
+}
+
+// newReleaseFixture seeds booking 42: a completed booking of provider 7 with a
+// paid payment, service amount 150000 and platform fee 15000, and a verified
+// bank account for provider 7.
+func newReleaseFixture(t *testing.T) *releaseFixture {
+	t.Helper()
+	f := &releaseFixture{
+		payouts: &fakePayoutRepo{},
+		bookings: &fakeBookingLookup{rows: map[uint]*entity.Booking{
+			42: {ID: 42, ProviderID: 7, Status: bookingStatusCompleted, SubTotal: 150000, PlatformFee: 15000, Total: 165000},
+		}},
+		payments: &fakePaymentLookup{byBooking: map[uint]*entity.Payment{
+			42: {BookingID: 42, Status: entity.PaymentStatusPaid, Amount: 165000, Currency: payoutCurrency},
+		}},
+		accounts: &fakePayoutAccountRepo{byUser: map[uint]*entity.PayoutAccount{
+			7: {
+				UserID:                     7,
+				BankCode:                   "BCAIDJA",
+				BankName:                   "Bank Central Asia",
+				AccountHolderNameEncrypted: "enc:Siti Rahayu",
+				AccountNumberEncrypted:     "enc:1234567890",
+				AccountLast4:               "7890",
+				AccountFingerprint:         "fp:1234567890",
+				Status:                     entity.PayoutAccountStatusVerified,
+			},
+		}},
+		gateway: &fakeTransferGateway{},
+	}
+	users := &fakeUserNameLookup{names: map[uint]string{7: "Siti Rahayu"}}
+	f.uc = NewPayoutUsecase(f.accounts, users, &fakeSecretBox{}, "v1").WithRelease(PayoutRelease{
+		Payouts:     f.payouts,
+		Bookings:    f.bookings,
+		Payments:    f.payments,
+		Gateway:     f.gateway,
+		FromAccount: "SRB-POOL",
+	})
+	return f
+}
+
+func requireDomainCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var domainErr *apperror.DomainError
+	require.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, code, domainErr.Code)
+}
+
+func TestPayoutUsecase_Release_TwiceCreatesOnePayoutAndPaysOnce(t *testing.T) {
+	f := newReleaseFixture(t)
+
+	first, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+	second, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	assert.Len(t, f.payouts.rows, 1)
+	assert.Equal(t, first.ID, second.ID)
+	assert.Equal(t, entity.PayoutStatusSubmitted, second.Status)
+	assert.Len(t, f.gateway.inquiries, 1)
+	assert.Len(t, f.gateway.payments, 1)
+	assert.Equal(t, "PO-42", first.PartnerReferenceNo)
+	assert.Equal(t, "PO-42", f.gateway.inquiries[0].PartnerReferenceNo)
+	assert.Equal(t, "PO-42", f.gateway.payments[0].PartnerReferenceNo)
+	assert.Equal(t, "INQ-1", f.gateway.payments[0].ReferenceNo)
+}
+
+func TestPayoutUsecase_Release_PaymentConflictMarksSubmittedAndNeverResends(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.paymentResult = &doku.TransferPaymentResult{ReferenceNo: "PAY-ORIG", PartnerReferenceNo: "PO-42", Replayed: true}
+
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutStatusSubmitted, payout.Status)
+	assert.Equal(t, "PAY-ORIG", payout.DokuReferenceNo)
+	assert.True(t, payout.Replayed)
+	assert.Equal(t, []string{"PO-42"}, f.gateway.statuses)
+
+	_, err = f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+	assert.Len(t, f.gateway.inquiries, 1)
+	assert.Len(t, f.gateway.payments, 1)
+}
+
+func TestPayoutUsecase_Release_FailedPaymentRetriesWithTheSameKey(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.paymentErr = errors.New("connection reset")
+
+	_, err := f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_TRANSFER_FAILED")
+	stored, err := f.payouts.FindByBookingID(context.Background(), 42)
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutStatusInquiry, stored.Status)
+	assert.Equal(t, "transfer payment failed", stored.LastError)
+
+	f.gateway.paymentErr = nil
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutStatusSubmitted, payout.Status)
+	assert.Empty(t, payout.LastError)
+	require.Len(t, f.gateway.payments, 2)
+	assert.Equal(t, "PO-42", f.gateway.payments[1].PartnerReferenceNo)
+	assert.Equal(t, "INQ-1", f.gateway.payments[1].ReferenceNo)
+	assert.Len(t, f.payouts.rows, 1)
+}
+
+func TestPayoutUsecase_Release_SubmittedPayoutIsReturnedUnchangedWithoutAnyProviderCall(t *testing.T) {
+	f := newReleaseFixture(t)
+	first, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+	f.gateway.inquiries = nil
+	f.gateway.payments = nil
+
+	again, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	assert.Equal(t, first.ID, again.ID)
+	assert.Equal(t, entity.PayoutStatusSubmitted, again.Status)
+	assert.Empty(t, f.gateway.inquiries)
+	assert.Empty(t, f.gateway.payments)
+	assert.Empty(t, f.gateway.statuses)
+}
+
+func TestPayoutUsecase_Release_PaidPayoutIsReturnedUnchangedWithoutAnyProviderCall(t *testing.T) {
+	f := newReleaseFixture(t)
+	first, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+	require.NoError(t, f.uc.ApplyTransferStatus(context.Background(), "PO-42", entity.PayoutStatusPaid))
+	f.gateway.inquiries = nil
+
+	again, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	assert.Equal(t, first.ID, again.ID)
+	assert.Equal(t, entity.PayoutStatusPaid, again.Status)
+	assert.Empty(t, f.gateway.inquiries)
+}
+
+func TestPayoutUsecase_Release_RefusesAChangedDestinationForTheSameBooking(t *testing.T) {
+	f := newReleaseFixture(t)
+	_, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+	inquiriesBefore := len(f.gateway.inquiries)
+
+	f.accounts.byUser[7].AccountFingerprint = "fp:0987654321"
+	f.accounts.byUser[7].AccountLast4 = "4321"
+
+	_, err = f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_DESTINATION_CHANGED")
+	assert.Len(t, f.gateway.inquiries, inquiriesBefore)
+	assert.Len(t, f.gateway.payments, 1)
+}
+
+func TestPayoutUsecase_Release_RefusesAChangedHolderNameForTheSameBooking(t *testing.T) {
+	f := newReleaseFixture(t)
+	_, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	f.accounts.byUser[7].AccountHolderNameEncrypted = "enc:Rudi Hartono"
+
+	_, err = f.uc.Release(context.Background(), 42)
+	requireDomainCode(t, err, "PAYOUT_DESTINATION_CHANGED")
+}
+
+func TestPayoutUsecase_ApplyTransferStatus_PaidPayoutIsNeverChanged(t *testing.T) {
+	f := newReleaseFixture(t)
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusPaid))
+	paidAt := f.payouts.rows[payout.ID].PaidAt
+	require.NotNil(t, paidAt)
+	before := *f.payouts.rows[payout.ID]
+
+	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusPaid))
+	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusSubmitted))
+	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusFailed))
+
+	after := f.payouts.rows[payout.ID]
+	assert.Equal(t, entity.PayoutStatusPaid, after.Status)
+	assert.Equal(t, before, *after)
+	assert.Equal(t, paidAt, after.PaidAt)
+}
+
+func TestPayoutUsecase_ApplyTransferStatus_SubmittedThenPaid(t *testing.T) {
+	f := newReleaseFixture(t)
+	_, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusSubmitted))
+	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusPaid))
+
+	stored, err := f.payouts.FindByBookingID(ctx, 42)
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutStatusPaid, stored.Status)
+	assert.NotNil(t, stored.PaidAt)
+}
+
+func TestPayoutUsecase_ApplyTransferStatus_RejectsAnUnknownStatus(t *testing.T) {
+	f := newReleaseFixture(t)
+	_, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	err = f.uc.ApplyTransferStatus(context.Background(), "PO-42", "bogus")
+	requireDomainCode(t, err, "INVALID_TRANSFER_STATUS")
+}
+
+func TestPayoutUsecase_Release_PaysTheServiceAmountNotThePlatformFee(t *testing.T) {
+	f := newReleaseFixture(t)
+
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(150000), payout.Amount)
+	require.Len(t, f.gateway.inquiries, 1)
+	assert.Equal(t, int64(150000), f.gateway.inquiries[0].Amount)
+	assert.Equal(t, int64(150000), f.gateway.payments[0].Amount)
+}
+
+func TestPayoutUsecase_Release_StoresTheAccountNumberOnlyEncrypted(t *testing.T) {
+	f := newReleaseFixture(t)
+
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	require.Len(t, f.gateway.inquiries, 1)
+	assert.Equal(t, "1234567890", f.gateway.inquiries[0].BeneficiaryAccountNumber)
+	assert.Equal(t, f.accounts.byUser[7].AccountNumberEncrypted, payout.BeneficiaryAccountNumberEncrypted)
+	assert.NotEqual(t, "1234567890", payout.BeneficiaryAccountNumberEncrypted)
+	assert.Equal(t, "7890", payout.BeneficiaryLast4)
+}
+
+func TestPayoutUsecase_Release_RefusesAnUnpaidOrUnfinishedBooking(t *testing.T) {
+	cases := []struct {
+		name    string
+		booking string
+		payment string
+		code    string
+	}{
+		{name: "pending booking", booking: entity.BookingStatusPending, payment: entity.PaymentStatusPaid, code: "PAYOUT_BOOKING_NOT_RELEASABLE"},
+		{name: "unpaid payment", booking: bookingStatusCompleted, payment: entity.PaymentStatusPending, code: "PAYOUT_BOOKING_NOT_PAID"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReleaseFixture(t)
+			f.bookings.rows[42].Status = tc.booking
+			f.payments.byBooking[42].Status = tc.payment
+
+			_, err := f.uc.Release(context.Background(), 42)
+			requireDomainCode(t, err, tc.code)
+			assert.Empty(t, f.gateway.inquiries)
+			assert.Empty(t, f.payouts.rows)
+		})
+	}
 }
