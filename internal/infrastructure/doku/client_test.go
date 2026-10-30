@@ -88,16 +88,18 @@ func TestCreateCheckout_SendsSignedQRISRequest(t *testing.T) {
 		CallbackURL:   "http://localhost:5173/payment/return?booking_id=42",
 		ExpiryMinutes: 60,
 		Channel:       "qris",
+		RequestID:     "SRB-42-1",
 	})
 
 	require.NoError(t, err)
 	assert.Equal(t, "https://checkout.doku.test/pay/1", result.PaymentURL)
 	assert.Equal(t, "sess-1", result.ProviderSessionID)
-	assert.NotEmpty(t, result.ProviderRequestID)
+	assert.Equal(t, "SRB-42-1", result.ProviderRequestID)
+	assert.False(t, result.Replayed)
 
 	// Signed request headers.
 	assert.Equal(t, testClientID, capturedHeader.Get("Client-Id"))
-	assert.NotEmpty(t, capturedHeader.Get("Request-Id"))
+	assert.Equal(t, "SRB-42-1", capturedHeader.Get("Request-Id"))
 	assert.NotEmpty(t, capturedHeader.Get("Request-Timestamp"))
 	assert.Contains(t, capturedHeader.Get("Signature"), "HMACSHA256=")
 
@@ -140,6 +142,7 @@ func TestCreateCheckout_OmitsHubAccountWhenNotConfigured(t *testing.T) {
 		Amount:        10000,
 		ExpiryMinutes: 30,
 		Channel:       "qris",
+		RequestID:     "SRB-43-1",
 	})
 	require.NoError(t, err)
 
@@ -170,6 +173,7 @@ func TestCreateCheckout_SendsOverrideNotificationURLWhenConfigured(t *testing.T)
 		Amount:        10000,
 		ExpiryMinutes: 30,
 		Channel:       "qris",
+		RequestID:     "SRB-45-1",
 	})
 	require.NoError(t, err)
 
@@ -196,6 +200,7 @@ func TestCreateCheckout_OmitsOverrideNotificationURLWhenNotConfigured(t *testing
 		Amount:        10000,
 		ExpiryMinutes: 30,
 		Channel:       "qris",
+		RequestID:     "SRB-46-1",
 	})
 	require.NoError(t, err)
 
@@ -221,6 +226,7 @@ func TestCreateCheckout_MapsChannelSlugToDOKUChannelName(t *testing.T) {
 		Amount:        10000,
 		ExpiryMinutes: 30,
 		Channel:       "ovo",
+		RequestID:     "SRB-47-1",
 	})
 	require.NoError(t, err)
 
@@ -243,6 +249,7 @@ func TestCreateCheckout_RejectsUnknownChannel(t *testing.T) {
 		Amount:        10000,
 		ExpiryMinutes: 30,
 		Channel:       "carrier_pigeon",
+		RequestID:     "SRB-48-1",
 	})
 
 	require.Error(t, err)
@@ -260,6 +267,79 @@ func TestCreateCheckout_FailsWithoutCredentials(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "DOKU_CLIENT_ID")
+}
+
+func TestCreateCheckout_UsesTheGivenRequestID(t *testing.T) {
+	var capturedHeader http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Clone()
+		_, _ = w.Write([]byte(`{"response":{"payment":{"url":"https://checkout.doku.test/pay/1"}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{ClientID: testClientID, SecretKey: testSecret, BaseURL: server.URL})
+
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		InvoiceNumber: "SRB-42-7",
+		Amount:        10000,
+		ExpiryMinutes: 30,
+		Channel:       "qris",
+		RequestID:     "SRB-42-7",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "SRB-42-7", capturedHeader.Get("Request-Id"))
+}
+
+func TestCreateCheckout_RequiresARequestID(t *testing.T) {
+	client := NewClient(Config{ClientID: testClientID, SecretKey: testSecret, BaseURL: "https://api-sandbox.doku.com"})
+
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		InvoiceNumber: "SRB-42-7",
+		Amount:        10000,
+		Channel:       "qris",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "request id")
+}
+
+func TestCreateCheckout_Treats409WithTheOriginalBodyAsAReplay(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"response":{"payment":{"url":"https://checkout.doku.test/pay/original"}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{ClientID: testClientID, SecretKey: testSecret, BaseURL: server.URL})
+
+	result, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		InvoiceNumber: "SRB-42-7",
+		Amount:        10000,
+		ExpiryMinutes: 30,
+		Channel:       "qris",
+		RequestID:     "SRB-42-7",
+	})
+	require.NoError(t, err, "a 409 carrying the original checkout is a replay, not a failure")
+	assert.Equal(t, "https://checkout.doku.test/pay/original", result.PaymentURL)
+	assert.True(t, result.Replayed)
+}
+
+func TestCreateCheckout_Treats409WithoutAResultAsAnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"something else"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{ClientID: testClientID, SecretKey: testSecret, BaseURL: server.URL})
+
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		InvoiceNumber: "SRB-42-7",
+		Amount:        10000,
+		ExpiryMinutes: 30,
+		Channel:       "qris",
+		RequestID:     "SRB-42-7",
+	})
+	require.Error(t, err)
 }
 
 func TestVerifyNotification_AcceptsMatchingSignature(t *testing.T) {

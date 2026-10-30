@@ -31,7 +31,15 @@ type PaymentRepository interface {
 	Create(ctx context.Context, payment *entity.Payment) error
 	FindByBookingID(ctx context.Context, bookingID uint) (*entity.Payment, error)
 	FindByInvoiceNumber(ctx context.Context, invoiceNumber string) (*entity.Payment, error)
+	// FindByIdempotencyKey returns the attempt that carries the key.
+	FindByIdempotencyKey(ctx context.Context, key string) (*entity.Payment, error)
+	// UpdateIdempotency stores the key and request fingerprint of an attempt.
+	// It must run before the provider is called with the key.
+	UpdateIdempotency(ctx context.Context, paymentID uint, key, fingerprint string) error
 	UpdateCheckout(ctx context.Context, id uint, checkout PaymentCheckout) error
+	// MarkReplayed records whether the provider answered the attempt with the
+	// original result of an earlier request carrying the same key.
+	MarkReplayed(ctx context.Context, paymentID uint, replayed bool) error
 	UpdateStatus(ctx context.Context, id uint, status string, paidAt *time.Time) error
 	// UpdateStatusIfPending applies status only while the row is still
 	// pending; it returns whether the row was changed.

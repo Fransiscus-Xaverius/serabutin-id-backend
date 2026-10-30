@@ -72,6 +72,37 @@ func (r *PaymentRepository) FindByIdempotencyKey(ctx context.Context, key string
 	return toPaymentEntity(&m), nil
 }
 
+// UpdateIdempotency stores the key and fingerprint of an attempt. The key
+// is nullable, so an empty key is stored as NULL.
+func (r *PaymentRepository) UpdateIdempotency(ctx context.Context, paymentID uint, key, fingerprint string) error {
+	updates := map[string]interface{}{
+		"idempotency_key":     nullableString(key),
+		"request_fingerprint": fingerprint,
+	}
+	result := r.db.WithContext(ctx).Model(&model.PaymentModel{}).Where("id = ?", paymentID).Updates(updates)
+	if result.Error != nil {
+		return paymentDBError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return paymentNotFoundError()
+	}
+	return nil
+}
+
+func (r *PaymentRepository) MarkReplayed(ctx context.Context, paymentID uint, replayed bool) error {
+	result := r.db.WithContext(ctx).
+		Model(&model.PaymentModel{}).
+		Where("id = ?", paymentID).
+		Update("replayed", replayed)
+	if result.Error != nil {
+		return paymentDBError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return paymentNotFoundError()
+	}
+	return nil
+}
+
 func (r *PaymentRepository) UpdateCheckout(ctx context.Context, id uint, checkout repository.PaymentCheckout) error {
 	updates := map[string]interface{}{
 		"payment_url":         checkout.PaymentURL,

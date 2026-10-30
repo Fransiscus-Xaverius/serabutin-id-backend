@@ -49,6 +49,20 @@ func (f *handlerFakePaymentRepo) FindByInvoiceNumber(ctx context.Context, invoic
 	}
 	return p, nil
 }
+func (f *handlerFakePaymentRepo) FindByIdempotencyKey(ctx context.Context, key string) (*entity.Payment, error) {
+	for _, p := range f.payments {
+		if p.IdempotencyKey == key {
+			return p, nil
+		}
+	}
+	return nil, apperror.NewDomainError(apperror.ErrNotFound, "PAYMENT_NOT_FOUND", "payment not found")
+}
+func (f *handlerFakePaymentRepo) UpdateIdempotency(ctx context.Context, paymentID uint, key, fingerprint string) error {
+	return nil
+}
+func (f *handlerFakePaymentRepo) MarkReplayed(ctx context.Context, paymentID uint, replayed bool) error {
+	return nil
+}
 func (f *handlerFakePaymentRepo) UpdateCheckout(ctx context.Context, id uint, checkout repository.PaymentCheckout) error {
 	return nil
 }

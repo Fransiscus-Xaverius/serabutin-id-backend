@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/payment"
 )
@@ -74,7 +72,10 @@ func (c *Client) CreateCheckout(ctx context.Context, req payment.CreateCheckoutR
 		return nil, fmt.Errorf("doku checkout is not configured: DOKU_CLIENT_ID and DOKU_SECRET_KEY are required")
 	}
 
-	requestID := uuid.NewString()
+	requestID := req.RequestID
+	if requestID == "" {
+		return nil, fmt.Errorf("doku checkout requires a request id (the idempotency key)")
+	}
 	timestamp := c.now().UTC().Format(timestampLayout)
 
 	checkout, err := c.checkoutBody(req)
@@ -106,6 +107,14 @@ func (c *Client) CreateCheckout(ctx context.Context, req payment.CreateCheckoutR
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode == http.StatusConflict {
+		// DOKU answers a duplicate Request-Id with 409 and the original
+		// response body. That is a replay, not a failure.
+		var replay checkoutResponse
+		if err := json.Unmarshal(raw, &replay); err == nil && replay.Response.Payment.URL != "" {
+			return c.checkoutResult(replay, requestID, req.ExpiryMinutes, true), nil
+		}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("doku checkout returned HTTP %d: %s", resp.StatusCode, truncate(string(raw), 500))
 	}
@@ -118,9 +127,13 @@ func (c *Client) CreateCheckout(ctx context.Context, req payment.CreateCheckoutR
 		return nil, fmt.Errorf("doku checkout response missing payment url")
 	}
 
+	return c.checkoutResult(parsed, requestID, req.ExpiryMinutes, false), nil
+}
+
+func (c *Client) checkoutResult(parsed checkoutResponse, requestID string, expiryMinutes int, replayed bool) *payment.CreateCheckoutResult {
 	expiresAt := parseExpiredDate(parsed.Response.Payment.ExpiredDate)
 	if expiresAt.IsZero() {
-		minutes := req.ExpiryMinutes
+		minutes := expiryMinutes
 		if minutes <= 0 {
 			minutes = 60
 		}
@@ -132,7 +145,8 @@ func (c *Client) CreateCheckout(ctx context.Context, req payment.CreateCheckoutR
 		ProviderRequestID: requestID,
 		ProviderSessionID: parsed.Response.Order.SessionID,
 		ExpiresAt:         expiresAt,
-	}, nil
+		Replayed:          replayed,
+	}
 }
 
 func (c *Client) VerifyNotification(rawBody []byte, headers map[string]string) error {

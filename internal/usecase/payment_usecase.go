@@ -14,6 +14,7 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/idempotency"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/payment"
 )
 
@@ -114,20 +115,6 @@ func (uc *PaymentUsecase) CreateCheckout(ctx context.Context, booking *entity.Bo
 		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_METHOD_UNAVAILABLE", "payment method is not available")
 	}
 
-	name, email, phone := "Pelanggan", "", ""
-	if uc.userRepo != nil {
-		customer, err := uc.userRepo.FindByID(ctx, booking.CustomerID)
-		if err != nil {
-			log.Printf("[PaymentUsecase.CreateCheckout] load customer %d: %v", booking.CustomerID, err)
-		} else if customer != nil {
-			if customer.Name != "" {
-				name = customer.Name
-			}
-			email = customer.Email
-			phone = customer.WhatsApp
-		}
-	}
-
 	expiresAt := uc.now().Add(time.Duration(uc.expiryMinutes) * time.Minute)
 	record := &entity.Payment{
 		BookingID:     booking.ID,
@@ -143,6 +130,84 @@ func (uc *PaymentUsecase) CreateCheckout(ctx context.Context, booking *entity.Bo
 		return nil, err
 	}
 
+	return uc.submitCheckout(ctx, booking, record)
+}
+
+// RetryCheckout sends the booking's payment attempt again with the key and
+// fingerprint it was first sent with. It never starts a new attempt, so DOKU
+// recognises the request and answers with the original checkout rather than
+// a second invoice.
+func (uc *PaymentUsecase) RetryCheckout(ctx context.Context, bookingID uint, channel string) (*entity.Payment, error) {
+	if uc.gateway == nil {
+		return nil, fmt.Errorf("payment gateway is not configured")
+	}
+	if channel == "" {
+		channel = entity.PaymentChannelQRIS
+	}
+	if !uc.IsPrepaidChannel(channel) {
+		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_METHOD_UNAVAILABLE", "payment method is not available")
+	}
+
+	stored, err := uc.paymentRepo.FindByBookingID(ctx, bookingID)
+	if err != nil {
+		return nil, err
+	}
+	if stored.Status == entity.PaymentStatusPending && stored.PaymentURL != "" {
+		return stored, nil
+	}
+	if stored.Status == entity.PaymentStatusExpired ||
+		(stored.Status == entity.PaymentStatusPending && stored.ExpiresAt != nil && !uc.now().Before(*stored.ExpiresAt)) {
+		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_EXPIRED", "payment has expired, create a new booking")
+	}
+	if stored.Status != entity.PaymentStatusPending && stored.Status != entity.PaymentStatusFailed {
+		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_NOT_RETRYABLE", "payment cannot be retried")
+	}
+	if channel != stored.Channel {
+		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_REQUEST_CHANGED", "payment method does not match the pending payment")
+	}
+
+	booking, err := uc.bookingRepo.FindByID(ctx, bookingID)
+	if err != nil {
+		return nil, err
+	}
+	return uc.submitCheckout(ctx, booking, stored)
+}
+
+// submitCheckout keys the attempt, stores the key and fingerprint before the
+// gateway is called, and then records the checkout the gateway returns. A
+// row that already carries a key is re-sent with that key, and only if the
+// request still matches the stored fingerprint.
+func (uc *PaymentUsecase) submitCheckout(ctx context.Context, booking *entity.Booking, record *entity.Payment) (*entity.Payment, error) {
+	key := idempotency.CollectionKey(booking.ID, record.ID)
+	fingerprint := idempotency.Fingerprint(key, idempotency.CanonicalPaymentRequest(
+		record.InvoiceNumber, record.Amount, record.Currency, record.Channel, uc.expiryMinutes,
+	))
+	if record.IdempotencyKey != "" {
+		if record.IdempotencyKey != key || record.RequestFingerprint != fingerprint {
+			return record, apperror.NewDomainError(apperror.ErrValidation, "PAYMENT_REQUEST_CHANGED", "payment request no longer matches the pending payment")
+		}
+	} else {
+		if err := uc.paymentRepo.UpdateIdempotency(ctx, record.ID, key, fingerprint); err != nil {
+			return uc.failCheckout(ctx, record, err)
+		}
+		record.IdempotencyKey = key
+		record.RequestFingerprint = fingerprint
+	}
+
+	name, email, phone := "Pelanggan", "", ""
+	if uc.userRepo != nil {
+		customer, err := uc.userRepo.FindByID(ctx, booking.CustomerID)
+		if err != nil {
+			log.Printf("[PaymentUsecase.submitCheckout] load customer %d: %v", booking.CustomerID, err)
+		} else if customer != nil {
+			if customer.Name != "" {
+				name = customer.Name
+			}
+			email = customer.Email
+			phone = customer.WhatsApp
+		}
+	}
+
 	result, err := uc.gateway.CreateCheckout(ctx, payment.CreateCheckoutRequest{
 		BookingID:     booking.ID,
 		CustomerID:    booking.CustomerID,
@@ -154,30 +219,23 @@ func (uc *PaymentUsecase) CreateCheckout(ctx context.Context, booking *entity.Bo
 		CustomerPhone: phone,
 		CallbackURL:   fmt.Sprintf("%s/payment/return?booking_id=%d", uc.appPublicURL, booking.ID),
 		ExpiryMinutes: uc.expiryMinutes,
-		Channel:       channel,
+		Channel:       record.Channel,
+		RequestID:     key,
 	})
 	if err != nil {
-		record.Status = entity.PaymentStatusFailed
-		record.LastError = err.Error()
-		if updateErr := uc.paymentRepo.UpdateStatus(ctx, record.ID, record.Status, nil); updateErr != nil {
-			log.Printf("[PaymentUsecase.CreateCheckout] mark failed %d: %v", record.ID, updateErr)
-		}
-		if updateErr := uc.paymentRepo.UpdateLastError(ctx, record.ID, record.LastError); updateErr != nil {
-			log.Printf("[PaymentUsecase.CreateCheckout] save last error %d: %v", record.ID, updateErr)
-		}
-		return record, err
+		return uc.failCheckout(ctx, record, err)
 	}
 	if result == nil || result.PaymentURL == "" {
-		err := fmt.Errorf("payment gateway returned no checkout url")
-		record.Status = entity.PaymentStatusFailed
-		record.LastError = err.Error()
-		_ = uc.paymentRepo.UpdateStatus(ctx, record.ID, record.Status, nil)
-		_ = uc.paymentRepo.UpdateLastError(ctx, record.ID, record.LastError)
-		return record, err
+		return uc.failCheckout(ctx, record, fmt.Errorf("payment gateway returned no checkout url"))
 	}
 
+	expiresAt := record.ExpiresAt
 	if result.ExpiresAt.IsZero() {
-		result.ExpiresAt = expiresAt
+		if expiresAt == nil {
+			fallback := uc.now().Add(time.Duration(uc.expiryMinutes) * time.Minute)
+			expiresAt = &fallback
+		}
+		result.ExpiresAt = *expiresAt
 	}
 	record.PaymentURL = result.PaymentURL
 	record.ProviderRequestID = result.ProviderRequestID
@@ -190,14 +248,35 @@ func (uc *PaymentUsecase) CreateCheckout(ctx context.Context, booking *entity.Bo
 		ProviderSessionID: record.ProviderSessionID,
 		ExpiresAt:         record.ExpiresAt,
 	}); err != nil {
-		record.Status = entity.PaymentStatusFailed
-		record.LastError = err.Error()
-		_ = uc.paymentRepo.UpdateStatus(ctx, record.ID, record.Status, nil)
-		_ = uc.paymentRepo.UpdateLastError(ctx, record.ID, record.LastError)
-		return record, err
+		return uc.failCheckout(ctx, record, err)
+	}
+
+	record.Replayed = result.Replayed
+	if err := uc.paymentRepo.MarkReplayed(ctx, record.ID, record.Replayed); err != nil {
+		log.Printf("[PaymentUsecase.submitCheckout] save replayed %d: %v", record.ID, err)
+	}
+	if record.Status == entity.PaymentStatusFailed {
+		record.Status = entity.PaymentStatusPending
+		if err := uc.paymentRepo.UpdateStatus(ctx, record.ID, record.Status, nil); err != nil {
+			log.Printf("[PaymentUsecase.submitCheckout] reopen %d: %v", record.ID, err)
+		}
 	}
 
 	return record, nil
+}
+
+// failCheckout records a failed checkout attempt with its reason, so the API
+// can report the truth to the customer, and returns the original error.
+func (uc *PaymentUsecase) failCheckout(ctx context.Context, record *entity.Payment, cause error) (*entity.Payment, error) {
+	record.Status = entity.PaymentStatusFailed
+	record.LastError = cause.Error()
+	if err := uc.paymentRepo.UpdateStatus(ctx, record.ID, record.Status, nil); err != nil {
+		log.Printf("[PaymentUsecase.failCheckout] mark failed %d: %v", record.ID, err)
+	}
+	if err := uc.paymentRepo.UpdateLastError(ctx, record.ID, record.LastError); err != nil {
+		log.Printf("[PaymentUsecase.failCheckout] save last error %d: %v", record.ID, err)
+	}
+	return record, cause
 }
 
 func (uc *PaymentUsecase) GetForBooking(ctx context.Context, userID, bookingID uint) (*entity.Payment, error) {

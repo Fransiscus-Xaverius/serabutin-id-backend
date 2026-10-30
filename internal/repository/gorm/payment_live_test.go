@@ -81,6 +81,38 @@ func TestLivePayment_FindByIdempotencyKey_MissingIsTheDomainNotFound(t *testing.
 	assert.Equal(t, "PAYMENT_NOT_FOUND", domainErr.Code)
 }
 
+func TestLivePayment_UpdateIdempotencyAndMarkReplayedRoundTrip(t *testing.T) {
+	db := setupBountyLiveDB(t)
+	ctx := context.Background()
+	repo := NewPaymentRepository(db)
+	bookingID := createLiveBooking(t, db)
+
+	payment := &entity.Payment{
+		BookingID:     bookingID,
+		InvoiceNumber: "SRB-42-7-3",
+		Amount:        155000,
+		Currency:      "IDR",
+		Channel:       "qris",
+		Status:        entity.PaymentStatusPending,
+		Provider:      "doku",
+	}
+	require.NoError(t, repo.Create(ctx, payment))
+
+	require.NoError(t, repo.UpdateIdempotency(ctx, payment.ID, "SRB-42-7", "fp-7"))
+	found, err := repo.FindByIdempotencyKey(ctx, "SRB-42-7")
+	require.NoError(t, err)
+	assert.Equal(t, payment.ID, found.ID)
+	assert.Equal(t, "fp-7", found.RequestFingerprint)
+
+	require.NoError(t, repo.MarkReplayed(ctx, payment.ID, true))
+	found, err = repo.FindByBookingID(ctx, bookingID)
+	require.NoError(t, err)
+	assert.True(t, found.Replayed)
+
+	err = repo.MarkReplayed(ctx, 999999999, true)
+	require.Error(t, err, "marking a missing payment must not pass silently")
+}
+
 func TestLivePayment_PaymentWithoutAKeyIsStoredAsNull(t *testing.T) {
 	db := setupBountyLiveDB(t)
 	ctx := context.Background()

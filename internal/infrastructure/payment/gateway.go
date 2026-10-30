@@ -38,6 +38,9 @@ type CreateCheckoutRequest struct {
 	// Channel is our slug for the payment method (e.g. "qris"). The
 	// provider maps it to its own channel name.
 	Channel string
+	// RequestID is the idempotency key sent to the provider. It is derived
+	// from the persisted payment row, so a retry sends the same key.
+	RequestID string
 }
 
 type CreateCheckoutResult struct {
@@ -45,6 +48,9 @@ type CreateCheckoutResult struct {
 	ProviderRequestID string
 	ProviderSessionID string
 	ExpiresAt         time.Time
+	// Replayed reports that the provider answered with the original checkout
+	// of an earlier request with the same key, not a new one.
+	Replayed bool
 }
 
 // Gateway is the provider boundary used by the payment usecase. The DOKU
