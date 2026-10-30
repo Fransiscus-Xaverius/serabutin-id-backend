@@ -139,7 +139,7 @@ func (uc *BookingUsecase) notifyBoth(ctx context.Context, booking *entity.Bookin
 func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, req dto.CreateBookingRequest, idempotencyKey string) (*entity.Booking, error) {
 	fingerprint := ""
 	if idempotencyKey != "" {
-		fingerprint = idempotency.Fingerprint(idempotencyKey, bookingCanonicalRequest(req))
+		fingerprint = idempotency.Fingerprint(bookingCanonicalRequest(req))
 		existing, err := uc.replayBooking(ctx, customerID, idempotencyKey, fingerprint)
 		if err != nil {
 			return nil, err

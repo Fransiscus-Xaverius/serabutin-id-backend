@@ -34,6 +34,19 @@ func NewBookingHandler(
 	}
 }
 
+// Create honours the Idempotency-Key header. The contract for clients:
+//
+//   - A repeat of the same request with the same key returns the booking the
+//     first request created: 201 with the same id, and no second booking or
+//     checkout.
+//   - A repeat can arrive while the first request is still creating its
+//     checkout. The booking then comes back with "payment": null. The client
+//     must not treat that as an error: it asks POST
+//     /api/v1/bookings/:id/payment/retry for the checkout URL. That endpoint
+//     reuses the stored key, so the provider answers with the original
+//     checkout rather than a second invoice.
+//   - A key reused for a different request, or owned by another customer, is
+//     refused with 409 IDEMPOTENCY_KEY_REUSED.
 func (h *BookingHandler) Create(c fiber.Ctx) error {
 	userID := requestctx.GetUserID(c)
 	if userID == 0 {
@@ -60,7 +73,11 @@ func (h *BookingHandler) Create(c fiber.Ctx) error {
 	return response.Success(c, fiber.StatusCreated, resp)
 }
 
-// RetryPayment sends a pending checkout again without creating a booking.
+// RetryPayment sends a pending checkout again without creating a booking. It
+// is the endpoint a client uses to obtain the checkout URL of a booking whose
+// payment has no URL yet, for example after a repeat create returned
+// "payment": null. It reuses the stored key, so it never starts a second
+// charge.
 func (h *BookingHandler) RetryPayment(c fiber.Ctx) error {
 	userID := requestctx.GetUserID(c)
 	if userID == 0 {

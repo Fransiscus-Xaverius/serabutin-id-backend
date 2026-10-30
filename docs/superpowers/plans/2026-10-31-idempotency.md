@@ -15,7 +15,7 @@
 - **No idempotency key is ever generated at call time.** Every key is derived from a persisted row, so a retry reuses it by construction.
 - Collection key: `SRB-<bookingID>-<paymentID>`. Withdrawal key: `PO-<bookingID>`. The withdrawal's secondary provider key `X-EXTERNAL-ID` is the numeric `payouts.id`.
 - A key is unique per row. A key reused with a different request is rejected with `IDEMPOTENCY_KEY_REUSED` (never silently reused).
-- The request fingerprint is `HMAC-SHA256(key, canonical-request)`, hex, truncated to 32 characters — the same construction the payout account fingerprint already uses.
+- The request fingerprint is `SHA-256(canonical-request)`, hex, truncated to 32 characters. It is a reuse detector, not a secret: the key sits in the same row. Secret material (the payout beneficiary account number) uses the encryption-keyed digest instead.
 - A provider `409` whose body carries the original result is **success**; the attempt is marked `replayed`. A `409` without it is an error.
 - The beneficiary account number is encrypted at rest with the existing `PAYOUT_ENCRYPTION_KEY`, exactly like the payout destination.
 - No idempotency key, fingerprint or reference number may contain an account number, a secret, or any other secret material.
@@ -102,13 +102,13 @@ func PayoutKey(bookingID uint) string {
 	return fmt.Sprintf("PO-%d", bookingID)
 }
 
-// Fingerprint identifies the request a key was used for. It is a keyed
-// digest, so it reveals nothing about the request and cannot be brute-forced
-// from the row.
-func Fingerprint(key, canonicalRequest string) string {
-	mac := hmac.New(sha256.New, []byte(key))
-	mac.Write([]byte(canonicalRequest))
-	return hex.EncodeToString(mac.Sum(nil))[:32]
+// Fingerprint identifies the request a key was used for: a plain SHA-256
+// hex digest of the canonical request, truncated to 32 characters. It is a
+// reuse detector, not a confidentiality control, because the key is stored
+// beside it. Never pass secret material here; use the encryption-keyed digest.
+func Fingerprint(canonicalRequest string) string {
+	sum := sha256.Sum256([]byte(canonicalRequest))
+	return hex.EncodeToString(sum[:])[:32]
 }
 ```
 

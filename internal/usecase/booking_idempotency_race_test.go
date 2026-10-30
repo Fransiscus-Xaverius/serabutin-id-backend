@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,9 +97,14 @@ func (f *raceBookingRepo) count() int {
 	return len(f.bookings)
 }
 
+// raceWait bounds every wait in these tests, so a broken implementation
+// fails the test within the go test timeout instead of hanging it.
+const raceWait = 5 * time.Second
+
 // raceInitiator is safe for concurrent use. When started and release are
-// set, a checkout signals started and then waits for release, which holds a
-// first request inside its checkout.
+// set, a checkout signals started and then waits for release (or raceWait),
+// which holds a first request inside its checkout. started must be buffered:
+// the signal never blocks the checkout.
 type raceInitiator struct {
 	calls   atomic.Int32
 	started chan struct{}
@@ -108,10 +114,16 @@ type raceInitiator struct {
 func (f *raceInitiator) CreateCheckout(ctx context.Context, booking *entity.Booking, channel string) (*entity.Payment, error) {
 	f.calls.Add(1)
 	if f.started != nil {
-		f.started <- struct{}{}
+		select {
+		case f.started <- struct{}{}:
+		default:
+		}
 	}
 	if f.release != nil {
-		<-f.release
+		select {
+		case <-f.release:
+		case <-time.After(raceWait):
+		}
 	}
 	return &entity.Payment{ID: 1, Status: entity.PaymentStatusPending, Channel: channel}, nil
 }
@@ -195,7 +207,7 @@ func TestCreateBooking_WinnerTakesTheSlotAfterTheLookup_ReturnsTheWinnersBooking
 func TestCreateBooking_InFlightRepeat_ReturnsTheStoredBookingWithoutPayment(t *testing.T) {
 	ctx := context.Background()
 	repo := newRaceBookingRepo()
-	initiator := &raceInitiator{started: make(chan struct{}), release: make(chan struct{})}
+	initiator := &raceInitiator{started: make(chan struct{}, 1), release: make(chan struct{})}
 	uc := newRaceUC(repo, initiator)
 
 	type result struct {
@@ -207,7 +219,11 @@ func TestCreateBooking_InFlightRepeat_ReturnsTheStoredBookingWithoutPayment(t *t
 		booking, err := uc.CreateBooking(ctx, 10, prepayRequest(entity.PaymentChannelQRIS), "abc")
 		first <- result{booking, err}
 	}()
-	<-initiator.started
+	select {
+	case <-initiator.started:
+	case <-time.After(raceWait):
+		t.Fatal("the first checkout never started")
+	}
 
 	repeat, err := uc.CreateBooking(ctx, 10, prepayRequest(entity.PaymentChannelQRIS), "abc")
 
@@ -217,7 +233,12 @@ func TestCreateBooking_InFlightRepeat_ReturnsTheStoredBookingWithoutPayment(t *t
 	assert.Equal(t, int32(1), initiator.calls.Load(), "the repeat must not start a second checkout")
 
 	close(initiator.release)
-	got := <-first
+	var got result
+	select {
+	case got = <-first:
+	case <-time.After(raceWait):
+		t.Fatal("the first request never finished")
+	}
 	require.NoError(t, got.err)
 	assert.Equal(t, got.booking.ID, repeat.ID, "both callers end up with the same booking")
 	assert.Equal(t, 1, repo.count())

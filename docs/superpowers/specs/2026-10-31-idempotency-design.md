@@ -52,7 +52,7 @@ For the transfer API, a `409 Duplicate partnerReferenceNo` means *we already sub
 
 ## 5. Request fingerprint
 
-Each idempotent attempt stores a fingerprint: `HMAC-SHA256(key, canonical-request)` (the same keyed-digest construction the payout feature already uses for account fingerprints). A retry whose fingerprint differs from the stored one is rejected with `IDEMPOTENCY_KEY_REUSED` — a key may never be reused for a different amount, destination, or booking.
+Each idempotent attempt stores a fingerprint: `SHA-256(canonical-request)`, hex, truncated to 32 characters. It is a **reuse detector**, an equality check on the request, not a confidentiality control. The key is stored in the same row, so anyone who can read the row can recompute the fingerprint for a guessed request; the fingerprint therefore must never cover secret material. A retry whose fingerprint differs from the stored one is rejected with `IDEMPOTENCY_KEY_REUSED` — a key may never be reused for a different amount, destination, or booking. Secret material (the payout beneficiary account number) is fingerprinted with the encryption-keyed digest the payout feature already uses, never with this construction.
 
 ## 6. Collection flow
 

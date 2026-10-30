@@ -18,6 +18,8 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/idempotency"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/payment"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
 	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
 	"github.com/serabutin/serabutin-id-backend/pkg/requestctx"
@@ -190,4 +192,72 @@ func TestBookingHandler_RetryPayment_RetriesTheCheckoutOfTheSameBooking(t *testi
 	require.Equal(t, 200, status)
 	assert.Equal(t, bookingID, bookingIDOf(t, retried), "a retry answers with the same booking")
 	assert.Len(t, bookingRepo.bookings, 1, "a retry never creates a booking")
+}
+
+// idemCheckoutGateway answers every checkout with a URL and records the
+// request id each call carried.
+type idemCheckoutGateway struct {
+	url        string
+	requestIDs []string
+}
+
+func (g *idemCheckoutGateway) Name() string { return "doku" }
+func (g *idemCheckoutGateway) CreateCheckout(ctx context.Context, req payment.CreateCheckoutRequest) (*payment.CreateCheckoutResult, error) {
+	g.requestIDs = append(g.requestIDs, req.RequestID)
+	return &payment.CreateCheckoutResult{PaymentURL: g.url, ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+func (g *idemCheckoutGateway) VerifyNotification(rawBody []byte, headers map[string]string) error {
+	return nil
+}
+
+// The in-flight contract: a repeat can return the booking while its payment
+// row exists but has no checkout URL yet. The client then asks the retry
+// endpoint for the checkout, and that must produce the URL. It reuses the
+// stored key, so the provider answers with the original checkout.
+func TestBookingHandler_RetryPayment_BookingWhosePaymentHasNoURLYet_ReturnsTheCheckoutURL(t *testing.T) {
+	bookingRepo := &idemBookingRepo{bookings: map[uint]*entity.Booking{}}
+	bookingRepo.bookings[1] = &entity.Booking{
+		ID: 1, CustomerID: 10, ProviderID: 20, Status: entity.BookingStatusPendingPayment,
+		Total: 130000, PaymentMethod: entity.PaymentChannelQRIS,
+	}
+	paymentRepo := &handlerFakePaymentRepo{payments: map[string]*entity.Payment{}}
+	const invoice = "SRB-1-1"
+	const key = "SRB-1-1"
+	paymentRepo.payments[invoice] = &entity.Payment{
+		ID: 1, BookingID: 1, InvoiceNumber: invoice, Amount: 130000, Currency: "IDR",
+		Channel: entity.PaymentChannelQRIS, Status: entity.PaymentStatusPending,
+		Provider: entity.PaymentProviderDOKU, ExpiresAt: timePtr(time.Now().Add(time.Hour)),
+		IdempotencyKey:     key,
+		RequestFingerprint: idempotency.Fingerprint(idempotency.CanonicalPaymentRequest(invoice, 130000, "IDR", entity.PaymentChannelQRIS, 60)),
+	}
+	gateway := &idemCheckoutGateway{url: "https://checkout.example/pay/1"}
+	paymentUC := usecase.NewPaymentUsecase(paymentRepo, bookingRepo, nil, gateway, "sandbox", []string{entity.PaymentChannelQRIS}, 60, "http://localhost:5173")
+
+	serviceRepo := &mockServiceRepo{}
+	serviceRepo.On("FindByID", mock.Anything, mock.Anything).Return(&entity.Service{ID: 5, ProviderID: 20, Title: "Bersihkan Rumah", Status: "active"}, nil)
+	userRepo := &mockUserRepo{}
+	userRepo.On("FindByID", mock.Anything, mock.Anything).Return(&entity.User{ID: 10, Name: "Budi"}, nil)
+	bookingUC := usecase.NewBookingUsecase(bookingRepo, serviceRepo, userRepo, 5000, 5000, 7000, nil)
+	bookingUC.SetPaymentInitiator(paymentUC)
+	h := NewBookingHandler(bookingUC, usecase.NewProfileUsecase(userRepo), usecase.NewServiceUsecase(serviceRepo, userRepo, nil))
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.GlobalErrorHandler})
+	app.Use(func(c fiber.Ctx) error {
+		requestctx.SetUserID(c, 10)
+		return c.Next()
+	})
+	app.Post("/api/v1/bookings/:id/payment/retry", h.RetryPayment)
+
+	status, body := doIdemBookingRequest(t, app, "/api/v1/bookings/1/payment/retry", "", nil)
+
+	require.Equal(t, 200, status)
+	data, ok := body["data"].(map[string]interface{})
+	require.True(t, ok, "response must carry the booking: %v", body)
+	require.NotNil(t, data["payment"], "the retry must return the payment")
+	assert.Equal(t, "https://checkout.example/pay/1", data["payment"].(map[string]interface{})["payment_url"])
+	assert.Equal(t, []string{key}, gateway.requestIDs, "the checkout is sent with the stored key, not a new one")
+	assert.Len(t, bookingRepo.bookings, 1, "the retry never creates a booking")
+}
+
+func timePtr(t time.Time) *time.Time {
+	return &t
 }

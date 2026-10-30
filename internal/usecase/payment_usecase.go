@@ -179,7 +179,7 @@ func (uc *PaymentUsecase) RetryCheckout(ctx context.Context, bookingID uint, cha
 // request still matches the stored fingerprint.
 func (uc *PaymentUsecase) submitCheckout(ctx context.Context, booking *entity.Booking, record *entity.Payment) (*entity.Payment, error) {
 	key := idempotency.CollectionKey(booking.ID, record.ID)
-	fingerprint := idempotency.Fingerprint(key, idempotency.CanonicalPaymentRequest(
+	fingerprint := idempotency.Fingerprint(idempotency.CanonicalPaymentRequest(
 		record.InvoiceNumber, record.Amount, record.Currency, record.Channel, uc.expiryMinutes,
 	))
 	if record.IdempotencyKey != "" {

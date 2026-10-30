@@ -6,13 +6,16 @@
 //   - A key is never generated at call time. It is derived from a persisted
 //     row (the payment or the payout), so a retry of that row reuses the key
 //     by construction and a genuinely new attempt gets a new key.
-//   - A key and a fingerprint never carry secret material. A key holds row
-//     ids only; a fingerprint is a keyed digest, so it cannot be read back
-//     into the request it covers.
+//   - A key never carries secret material: it holds row ids only.
+//   - A fingerprint is a reuse detector, not a confidentiality control. It
+//     is a plain SHA-256 of the canonical request, stored next to the key,
+//     so the fields it covers can be guessed from the row. Never pass secret
+//     material (a bank account number, a token) to Fingerprint; secret
+//     material uses the encryption-keyed digest instead (see
+//     encryption.Cipher.Fingerprint).
 package idempotency
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -55,11 +58,17 @@ func CanonicalPaymentRequest(invoice string, amount int64, currency, channel str
 	)
 }
 
-// Fingerprint identifies the request a key was used for. It is a keyed
-// digest, so it reveals nothing about the request and cannot be brute-forced
-// from the row.
-func Fingerprint(key, canonicalRequest string) string {
-	mac := hmac.New(sha256.New, []byte(key))
-	mac.Write([]byte(canonicalRequest))
-	return hex.EncodeToString(mac.Sum(nil))[:32]
+// Fingerprint identifies the request a key was used for: a retry whose
+// fingerprint differs from the stored one is a different request under the
+// same key. It is the plain SHA-256 hex digest of the canonical request,
+// truncated to 32 characters. The fingerprint is stored next to its key, so
+// it does not hide the request from anyone who can read the row.
+//
+// EXCEPTION: a fingerprint over secret material (for example the beneficiary
+// bank account number of the payout path) must NOT use this helper. It uses
+// the encryption-keyed digest, encryption.Cipher.Fingerprint, which needs the
+// server's key to compute.
+func Fingerprint(canonicalRequest string) string {
+	sum := sha256.Sum256([]byte(canonicalRequest))
+	return hex.EncodeToString(sum[:])[:32]
 }

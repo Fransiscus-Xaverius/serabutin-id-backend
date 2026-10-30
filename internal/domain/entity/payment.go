@@ -71,8 +71,9 @@ type Payment struct {
 	// It is derived from the persisted row, so a retry reuses it. It is
 	// empty while the attempt has not been keyed yet.
 	IdempotencyKey string
-	// RequestFingerprint identifies the request the key was used for. It
-	// is a keyed digest, so it holds no secret material.
+	// RequestFingerprint identifies the request the key was used for. It is
+	// a SHA-256 digest of the canonical request, a reuse detector and not a
+	// confidentiality control; the canonical request holds no secret.
 	RequestFingerprint string
 	// Replayed reports that the provider answered this attempt with the
 	// original result of an earlier one instead of creating a new one.

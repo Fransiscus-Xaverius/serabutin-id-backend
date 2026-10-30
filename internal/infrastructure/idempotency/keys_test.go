@@ -1,7 +1,6 @@
 package idempotency
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
@@ -23,11 +22,10 @@ func TestPayoutKey_IsStablePerBooking(t *testing.T) {
 }
 
 func TestFingerprint_IsStableForTheSameRequestAndDiffersOtherwise(t *testing.T) {
-	first := Fingerprint("SRB-42-7", `{"amount":155000,"channel":"qris"}`)
-	assert.Equal(t, first, Fingerprint("SRB-42-7", `{"amount":155000,"channel":"qris"}`))
-	assert.NotEqual(t, first, Fingerprint("SRB-42-7", `{"amount":155001,"channel":"qris"}`))
+	first := Fingerprint(`{"amount":155000,"channel":"qris"}`)
+	assert.Equal(t, first, Fingerprint(`{"amount":155000,"channel":"qris"}`))
+	assert.NotEqual(t, first, Fingerprint(`{"amount":155001,"channel":"qris"}`))
 	assert.Len(t, first, 32)
-	assert.NotContains(t, first, "155000")
 }
 
 func TestCollectionKeyAndPayoutKey_CarryNoSecretMaterial(t *testing.T) {
@@ -53,58 +51,49 @@ func TestCanonicalPaymentRequest_ChangesWhenTheChargeChanges(t *testing.T) {
 
 func TestCanonicalRequest_JoinsThePartsInAFixedOrder(t *testing.T) {
 	assert.Equal(t, "a|b|c", CanonicalRequest("a", "b", "c"))
-	assert.Equal(t, "a|b|c", CanonicalRequest("a", "b", "c"))
 	assert.NotEqual(t, CanonicalRequest("a", "b", "c"), CanonicalRequest("c", "b", "a"))
 }
 
-func TestFingerprint_DiffersForADifferentKeyOnTheSameRequest(t *testing.T) {
+func TestFingerprint_IsHexOfTheRequestDigest(t *testing.T) {
 	request := CanonicalPaymentRequest("SRB-42-7-1", 155000, "IDR", "qris", 30)
-
-	assert.NotEqual(t, Fingerprint("SRB-42-7", request), Fingerprint("SRB-42-8", request))
-}
-
-func TestFingerprint_IsHexAndHidesTheRequest(t *testing.T) {
-	request := CanonicalPaymentRequest("SRB-42-7-1", 155000, "IDR", "qris", 30)
-	fingerprint := Fingerprint("SRB-42-7", request)
+	fingerprint := Fingerprint(request)
 
 	assert.Len(t, fingerprint, 32)
-	assert.NotContains(t, fingerprint, "155000")
-	assert.NotContains(t, fingerprint, "qris")
 	assert.Regexp(t, "^[0-9a-f]{32}$", fingerprint)
 }
 
-// TestFingerprint_MatchesTheKnownAnswer pins the construction: the key is
-// the HMAC key, the request is the message, the digest is hex and is
-// truncated to 32 characters. A helper that swapped the two arguments, or
-// that hashed, encoded or truncated differently, fails here.
+// TestFingerprint_MatchesTheKnownAnswer pins the construction: a plain
+// SHA-256 of the canonical request, hex, truncated to 32 characters. A
+// helper that hashed, encoded or truncated differently fails here.
 //
 // The constant was produced outside Go, with
 //
-//	printf '%s' '{"amount":155000,"channel":"qris"}' | openssl dgst -sha256 -hmac 'SRB-42-7' -hex
+//	printf '%s' '{"amount":155000,"channel":"qris"}' | openssl dgst -sha256 -hex
 func TestFingerprint_MatchesTheKnownAnswer(t *testing.T) {
-	const key = "SRB-42-7"
 	const request = `{"amount":155000,"channel":"qris"}`
-	const knownDigest = "3894788100ae8115bcafcd52741d6f6269449b637285d485b0b3fe935966aa31"
+	const knownDigest = "75cdc335ba1f3be86c03c65339fcf3d1a63b995df1d29c8c35ccee019fd92856"
 
-	// The same digest, computed here with crypto/hmac directly.
-	mac := hmac.New(sha256.New, []byte(key))
-	_, _ = mac.Write([]byte(request))
-	expected := hex.EncodeToString(mac.Sum(nil))
+	// The same digest, computed here with crypto/sha256 directly.
+	sum := sha256.Sum256([]byte(request))
+	expected := hex.EncodeToString(sum[:])
 
 	assert.Equal(t, knownDigest, expected, "the known answer must come from an independent implementation")
-	assert.Len(t, expected, 64, "HMAC-SHA256 is 32 bytes, so 64 hex characters")
-	assert.Equal(t, expected[:32], Fingerprint(key, request), "the fingerprint is the hex digest truncated to 32 characters")
-	assert.Len(t, Fingerprint(key, request), 32)
+	assert.Len(t, expected, 64, "SHA-256 is 32 bytes, so 64 hex characters")
+	assert.Equal(t, expected[:32], Fingerprint(request), "the fingerprint is the hex digest truncated to 32 characters")
+	assert.Len(t, Fingerprint(request), 32)
 }
 
 // TestFingerprint_MatchesTheKnownAnswerOfTheCanonicalPaymentRequest pins
 // the whole chain: the canonical request of a checkout attempt and the
-// keyed digest over it.
+// digest over it.
+//
+// The constant was produced outside Go, with
+//
+//	printf '%s' 'SRB-42-7-1|155000|IDR|qris|30' | openssl dgst -sha256 -hex
 func TestFingerprint_MatchesTheKnownAnswerOfTheCanonicalPaymentRequest(t *testing.T) {
-	const key = "SRB-42-7"
-	const knownFingerprint = "d2b9b08553b9cc7b86ea21a26db09b86"
+	const knownFingerprint = "dc1ee5fe0351404fededb486cd3cf4e0"
 
 	request := CanonicalPaymentRequest("SRB-42-7-1", 155000, "IDR", "qris", 30)
 	assert.Equal(t, "SRB-42-7-1|155000|IDR|qris|30", request)
-	assert.Equal(t, knownFingerprint, Fingerprint(key, request))
+	assert.Equal(t, knownFingerprint, Fingerprint(request))
 }
