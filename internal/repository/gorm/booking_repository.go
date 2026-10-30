@@ -24,6 +24,9 @@ func (r *BookingRepository) Create(ctx context.Context, booking *entity.Booking)
 	m := r.toModel(booking)
 
 	if err := r.db.WithContext(ctx).Create(m).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) || isUniqueViolation(err) {
+			return apperror.NewDomainError(apperror.ErrDuplicateKey, "DUPLICATE_KEY", "booking with this idempotency key already exists")
+		}
 		return apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
 	}
 

@@ -8,6 +8,8 @@ import (
 )
 
 type BookingRepository interface {
+	// Create returns apperror.ErrDuplicateKey when the booking's idempotency
+	// key is already held by another committed booking.
 	Create(ctx context.Context, booking *entity.Booking) error
 	FindByID(ctx context.Context, id uint) (*entity.Booking, error)
 	UpdateStatus(ctx context.Context, id uint, status string) error

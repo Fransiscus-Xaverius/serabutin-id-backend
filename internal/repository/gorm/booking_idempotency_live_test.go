@@ -69,7 +69,8 @@ func TestLiveBooking_MigrationAddsTheKeyToATableThatAlreadyHoldsBookings(t *test
 
 	duplicate := newKeylessLiveBooking("abc")
 	duplicate.RequestFingerprint = "other"
-	require.Error(t, repo.Create(ctx, duplicate), "the unique index must refuse a second booking with the same key")
+	require.ErrorIs(t, repo.Create(ctx, duplicate), apperror.ErrDuplicateKey,
+		"the unique index must refuse a second booking with the same key as a duplicate-key error")
 
 	found, err := repo.FindByIdempotencyKey(ctx, "abc")
 	require.NoError(t, err)

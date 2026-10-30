@@ -27,6 +27,9 @@ var (
 	ErrAlreadyExists         = errors.New("resource already exists")
 	ErrPaymentRequired       = errors.New("payment required")
 	ErrPaymentNotConfigured  = errors.New("payment not configured")
+	// ErrDuplicateKey reports that an insert lost a unique-index race. The
+	// idempotent create paths catch it and answer with the existing row.
+	ErrDuplicateKey = errors.New("duplicate key")
 )
 
 type DomainError struct {

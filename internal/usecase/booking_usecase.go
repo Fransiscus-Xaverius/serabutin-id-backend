@@ -130,6 +130,12 @@ func (uc *BookingUsecase) notifyBoth(ctx context.Context, booking *entity.Bookin
 // idempotencyKey is bound to this request: a repeat of the same request by
 // the same customer returns the booking that was already created, and a key
 // reused for another request or another customer is refused.
+//
+// A repeat that arrives while the first request is still inside its checkout
+// returns the stored booking with no payment yet (Payment is nil). The repeat
+// starts no second checkout. The client fetches the checkout afterwards with
+// POST /api/v1/bookings/:id/payment/retry, or polls GET
+// /api/v1/bookings/:id/payment.
 func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, req dto.CreateBookingRequest, idempotencyKey string) (*entity.Booking, error) {
 	fingerprint := ""
 	if idempotencyKey != "" {
@@ -164,6 +170,18 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 	}
 	for _, taken := range booked {
 		if taken == req.ScheduleTime {
+			// A concurrent request with the same key may have just taken the
+			// slot with its own booking. That is the same request, so answer
+			// with its booking rather than SLOT_UNAVAILABLE.
+			if idempotencyKey != "" {
+				existing, err := uc.replayBooking(ctx, customerID, idempotencyKey, fingerprint)
+				if err != nil {
+					return nil, err
+				}
+				if existing != nil {
+					return existing, nil
+				}
+			}
 			return nil, apperror.NewDomainError(apperror.ErrValidation, "SLOT_UNAVAILABLE", "this time slot is already booked")
 		}
 	}
@@ -222,12 +240,17 @@ func (uc *BookingUsecase) CreateBooking(ctx context.Context, customerID uint, re
 	}
 
 	if err := uc.bookingRepo.Create(ctx, booking); err != nil {
-		// A concurrent request with the same key may have won the unique
-		// index first; answer with the booking it created.
-		if idempotencyKey != "" {
+		// A concurrent request with the same key won the unique index. The
+		// winner's row is committed before the duplicate error reaches us, so
+		// the lookup finds it and this caller gets the same booking, not an
+		// error.
+		if idempotencyKey != "" && errors.Is(err, apperror.ErrDuplicateKey) {
 			existing, replayErr := uc.replayBooking(ctx, customerID, idempotencyKey, fingerprint)
-			if replayErr != nil || existing != nil {
-				return existing, replayErr
+			if replayErr != nil {
+				return nil, replayErr
+			}
+			if existing != nil {
+				return existing, nil
 			}
 		}
 		log.Printf("[BookingUsecase.CreateBooking] create error: %v", err)
