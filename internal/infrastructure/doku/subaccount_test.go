@@ -345,6 +345,58 @@ func TestSubAccount_TransactionStatusFailsClosedWithoutAMatchingReference(t *tes
 	}
 }
 
+func TestSubAccount_TransactionStatus404IsTheTypedNotFound(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"responseCode":"4042501","responseMessage":"Transaction not found"}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	result, err := client.TransactionStatus(context.Background(), subAccountTestExternalID, "PR-1")
+
+	require.ErrorIs(t, err, ErrTransactionNotFound)
+	assert.Nil(t, result)
+}
+
+// Only a 404 means DOKU has no record. Every other failure must stay distinct
+// from ErrTransactionNotFound, so the caller never re-sends a transfer on it.
+func TestSubAccount_TransactionStatusTransientFailuresAreNotNotFound(t *testing.T) {
+	cases := map[string]int{
+		"unauthorized":          http.StatusUnauthorized,
+		"server error":          http.StatusInternalServerError,
+		"service unavailable":   http.StatusServiceUnavailable,
+		"gateway timeout":       http.StatusGatewayTimeout,
+		"bad request":           http.StatusBadRequest,
+		"conflict on the query": http.StatusConflict,
+	}
+	for name, status := range cases {
+		t.Run(name, func(t *testing.T) {
+			server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"responseCode":"5002500"}`))
+			})
+			client := newTestSubAccountClient(server.URL)
+
+			result, err := client.TransactionStatus(context.Background(), subAccountTestExternalID, "PR-1")
+
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, ErrTransactionNotFound)
+			assert.Nil(t, result)
+		})
+	}
+}
+
+func TestSubAccount_TransactionStatusTransportFailureIsNotNotFound(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {})
+	server.Close()
+	client := newTestSubAccountClient(server.URL)
+
+	_, err := client.TransactionStatus(context.Background(), subAccountTestExternalID, "PR-1")
+
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrTransactionNotFound)
+}
+
 func TestSubAccount_BalanceInquirySendsTheDocumentedRequestBody(t *testing.T) {
 	server, state := newSubAccountServer(t, func(w http.ResponseWriter) {
 		_, _ = w.Write([]byte(`{}`))

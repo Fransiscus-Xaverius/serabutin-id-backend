@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -34,13 +35,17 @@ const (
 	payoutStatusCheckFailed = "transaction status check failed"
 )
 
-// The steps of externalIDFor. Each DOKU request kind of a payout has its own.
+// The money-moving steps of a payout. Each has its own X-EXTERNAL-ID, derived
+// from the payout row, so DOKU deduplicates a retry of the same step.
 const (
 	externalStepInquiry = 1
 	externalStepPayment = 2
-	externalStepStatus  = 3
-	externalStepBalance = 4
 )
+
+// readExternalIDBase scales a payout id for the read-only calls: payoutID*1000
+// plus the payout's read attempt. A payout's reads stay far below 1000 a day at
+// the worker's cadence, so the numbers of one payout never run into the next.
+const readExternalIDBase = 1000
 
 var _ TransferGateway = (*doku.SubAccountClient)(nil)
 
@@ -109,6 +114,9 @@ type PayoutUsecase struct {
 	secret          SecretBox
 	encryptionKeyID string
 	release         *PayoutRelease
+	// settleMu makes the settled-balance gate and the reservation of the
+	// payout one step, so two releases cannot both pass on the same balance.
+	settleMu sync.Mutex
 }
 
 func NewPayoutUsecase(repo repository.PayoutAccountRepository, users UserNameLookup, secret SecretBox, encryptionKeyID string) *PayoutUsecase {
@@ -280,14 +288,15 @@ func (uc *PayoutUsecase) Release(ctx context.Context, bookingID uint) (*entity.P
 	case entity.PayoutStatusInquiry, entity.PayoutStatusFailed:
 		// The provider may already hold this transfer, so its state is read
 		// before anything is sent. An unreadable state is never re-sent.
-		wasFailed := payout.Status == entity.PayoutStatusFailed
+		from := payout.Status
+		wasFailed := from == entity.PayoutStatusFailed
 		if err := uc.reconcile(ctx, release, payout); err != nil {
 			return nil, uc.failTransfer(ctx, release, payout, "transaction status")
 		}
 		// A failed payout that DOKU still reports as failed is re-sent under
 		// the same key, which DOKU deduplicates. Any other answer is final.
 		if !wasFailed || payout.Status != entity.PayoutStatusFailed {
-			if err := release.Payouts.Update(ctx, payout); err != nil {
+			if err := uc.save(ctx, release, payout, from); err != nil {
 				return nil, err
 			}
 			return payout, nil
@@ -296,11 +305,16 @@ func (uc *PayoutUsecase) Release(ctx context.Context, bookingID uint) (*entity.P
 	return uc.transfer(ctx, release, payout)
 }
 
-// reconcile reads DOKU's answer for the payout and moves the payout to the
-// state that answer describes. An error or an unknown code changes nothing:
-// the caller must not send a transfer on an unknown state.
+// reconcile reads DOKU's answer for the payout and applies the state that
+// answer describes to the in-memory payout. The caller saves it. An error or
+// an unknown code changes nothing: the caller must not send a transfer on an
+// unknown state.
 func (uc *PayoutUsecase) reconcile(ctx context.Context, release *PayoutRelease, payout *entity.Payout) error {
-	status, err := release.Gateway.TransactionStatus(ctx, externalIDFor(payout, externalStepStatus), payout.PartnerReferenceNo)
+	readID, err := uc.nextReadID(ctx, release, payout)
+	if err != nil {
+		return err
+	}
+	status, err := release.Gateway.TransactionStatus(ctx, readID, payout.PartnerReferenceNo)
 	if err != nil {
 		return err
 	}
@@ -351,9 +365,9 @@ func transferFailureReason(status *doku.TransactionStatusResult) string {
 }
 
 // checkSettlement refuses a release unless the hub's settled balance covers
-// the amount. The held DOKU_MERCHANT_PENDING_IDR balance is not withdrawable,
-// so it never counts.
-func (uc *PayoutUsecase) checkSettlement(ctx context.Context, release *PayoutRelease, externalID string, amount int64) error {
+// the payout and every payout already in flight. The held
+// DOKU_MERCHANT_PENDING_IDR balance is not withdrawable, so it never counts.
+func (uc *PayoutUsecase) checkSettlement(ctx context.Context, release *PayoutRelease, externalID string, amount int64, inFlight int64) error {
 	balance, err := release.Gateway.BalanceInquiry(ctx, externalID, release.ProfileID)
 	if err != nil {
 		return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_SETTLEMENT_UNAVAILABLE", "cannot read the settled balance, the payout was not released")
@@ -366,8 +380,8 @@ func (uc *PayoutUsecase) checkSettlement(ctx context.Context, release *PayoutRel
 	if !ok {
 		return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_SETTLEMENT_UNAVAILABLE", "the settled balance is not a valid amount, the payout was not released")
 	}
-	if cents < amount*100 {
-		return apperror.NewDomainError(apperror.ErrValidation, "PAYOUT_INSUFFICIENT_SETTLED_BALANCE", "the settled balance is below the payout amount")
+	if cents < (amount+inFlight)*100 {
+		return apperror.NewDomainError(apperror.ErrValidation, "PAYOUT_INSUFFICIENT_SETTLED_BALANCE", "the settled balance is below the payout amount and the payouts in flight")
 	}
 	return nil
 }
@@ -407,16 +421,17 @@ func (uc *PayoutUsecase) SyncTransferStatus(ctx context.Context, partnerReferenc
 	if payout.Status == entity.PayoutStatusPaid {
 		return payout, nil
 	}
+	from := payout.Status
 	now := time.Now()
 	payout.LastReconciledAt = &now
 	if err := uc.reconcile(ctx, release, payout); err != nil {
 		payout.LastError = payoutStatusCheckFailed
-		if updateErr := release.Payouts.Update(ctx, payout); updateErr != nil {
+		if updateErr := uc.save(ctx, release, payout, from); updateErr != nil {
 			return nil, updateErr
 		}
 		return nil, err
 	}
-	if err := release.Payouts.Update(ctx, payout); err != nil {
+	if err := uc.save(ctx, release, payout, from); err != nil {
 		return nil, err
 	}
 	return payout, nil
@@ -490,22 +505,32 @@ func (uc *PayoutUsecase) ReconcileStalledInquiries(ctx context.Context, limit in
 	return resolved, nil
 }
 
-// redriveInquiry settles a payout stuck in inquiry. If DOKU already holds the
-// partner reference, its answer is adopted and nothing is sent again. If DOKU
-// has no record of it, no money has moved, so the inquiry and the payment are
-// sent again under the same partnerReferenceNo. DOKU deduplicates that key, so
-// a re-drive cannot pay twice. A failed re-drive stamps updated_at through the
-// usecase's failure path, which keeps the payout out of the next pass.
+// redriveInquiry settles a payout stuck in inquiry. If DOKU holds the partner
+// reference, its answer is adopted and nothing is sent again. Only DOKU's
+// typed not-found error means DOKU has no record: no money has moved, so the
+// inquiry and the payment are sent again under the same partnerReferenceNo,
+// which DOKU deduplicates. Any other failure says nothing about the transfer,
+// so the payout is skipped for this pass and its attempt refreshes updated_at.
 func (uc *PayoutUsecase) redriveInquiry(ctx context.Context, release *PayoutRelease, payout *entity.Payout) (bool, error) {
 	before := payout.Status
-	if status, err := release.Gateway.TransactionStatus(ctx, externalIDFor(payout, externalStepStatus), payout.PartnerReferenceNo); err == nil {
+	readID, err := uc.nextReadID(ctx, release, payout)
+	if err != nil {
+		return false, err
+	}
+	status, err := release.Gateway.TransactionStatus(ctx, readID, payout.PartnerReferenceNo)
+	switch {
+	case err == nil:
 		if err := applyTransactionStatus(payout, status); err != nil {
 			return false, err
 		}
-		if err := release.Payouts.Update(ctx, payout); err != nil {
+		if err := uc.save(ctx, release, payout, before); err != nil {
 			return false, err
 		}
 		return payout.Status != before, nil
+	case errors.Is(err, doku.ErrTransactionNotFound):
+		// DOKU has no record of the reference: the re-drive below sends it.
+	default:
+		return false, uc.failTransfer(ctx, release, payout, "transaction status")
 	}
 
 	redriven, err := uc.transfer(ctx, release, payout)
@@ -518,9 +543,14 @@ func (uc *PayoutUsecase) redriveInquiry(ctx context.Context, release *PayoutRele
 // StartPayoutReconcileWorker reconciles submitted payouts and re-drives stalled
 // inquiries every interval until ctx is cancelled. It is the guarantee behind
 // the transfer webhook: a missed or unroutable notification is still resolved
-// here, from DOKU's status API.
+// here, from DOKU's status API. A deployment without the release configuration
+// runs no pass at all.
 func StartPayoutReconcileWorker(ctx context.Context, uc *PayoutUsecase, interval time.Duration) {
 	if uc == nil {
+		return
+	}
+	if err := uc.releaseGate(); err != nil {
+		logger.Log.Info().Err(err).Msg("payout reconcile worker not started: payout release is not configured")
 		return
 	}
 	if interval <= 0 {
@@ -560,6 +590,19 @@ func (uc *PayoutUsecase) releaseDeps() (*PayoutRelease, error) {
 		return nil, errors.New("payout release is not configured")
 	}
 	return uc.release, nil
+}
+
+// releaseGate is the configuration a release needs: the hub profile and the
+// source account. It is the same condition the admin release is gated on.
+func (uc *PayoutUsecase) releaseGate() error {
+	release, err := uc.releaseDeps()
+	if err != nil {
+		return err
+	}
+	if release.ProfileID == "" || release.FromAccount == "" {
+		return errors.New("DOKU_HUB_PROFILE_ID and DOKU_SOURCE_ACCOUNT must be set")
+	}
+	return nil
 }
 
 // destinationFingerprint is the encryption-keyed digest of the payout
@@ -613,12 +656,46 @@ func (uc *PayoutUsecase) createPayout(ctx context.Context, release *PayoutReleas
 	return payout, nil
 }
 
-// externalIDFor is the X-EXTERNAL-ID of one DOKU request of a payout:
-// payoutID*10 + step. DOKU wants it unique per request within a day, so the
-// inquiry and the payment of one payout cannot share an id. It is derived from
-// the persisted row, so a retry of the same step sends the same id.
+// externalIDFor is the X-EXTERNAL-ID of one money-moving DOKU request of a
+// payout: payoutID*10 + step. It is derived from the persisted row, so a retry
+// of the same step sends the same id, which DOKU answers as a duplicate.
 func externalIDFor(payout *entity.Payout, step int64) string {
 	return strconv.FormatInt(int64(payout.ID)*10+step, 10)
+}
+
+// nextReadID takes the X-EXTERNAL-ID of the next read-only DOKU call of a
+// payout: payoutID*1000 + attempt. The attempt is persisted before the call
+// goes out, so no read reuses an id DOKU has already seen. Saving the attempt
+// also refreshes updated_at, which spaces out the next pass for this payout.
+func (uc *PayoutUsecase) nextReadID(ctx context.Context, release *PayoutRelease, payout *entity.Payout) (string, error) {
+	payout.ReadAttempts++
+	if err := uc.save(ctx, release, payout, payout.Status); err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(int64(payout.ID)*readExternalIDBase+int64(payout.ReadAttempts), 10), nil
+}
+
+// reserve passes the settled-balance gate and records the payout as in flight,
+// as one step under settleMu. The in-flight total is read before the balance:
+// a payout that completes between the two reads only makes the gate stricter.
+func (uc *PayoutUsecase) reserve(ctx context.Context, release *PayoutRelease, payout *entity.Payout) error {
+	uc.settleMu.Lock()
+	defer uc.settleMu.Unlock()
+
+	inFlight, err := release.Payouts.SumInFlight(ctx, payout.ID)
+	if err != nil {
+		return err
+	}
+	from := payout.Status
+	balanceID, err := uc.nextReadID(ctx, release, payout)
+	if err != nil {
+		return err
+	}
+	if err := uc.checkSettlement(ctx, release, balanceID, payout.Amount, inFlight); err != nil {
+		return err
+	}
+	payout.Status = entity.PayoutStatusInquiry
+	return uc.save(ctx, release, payout, from)
 }
 
 // transfer runs the inquiry and then the payment, each under the payout's
@@ -637,7 +714,7 @@ func (uc *PayoutUsecase) transfer(ctx context.Context, release *PayoutRelease, p
 		BeneficiaryAccountNumber: number,
 		Remark:                   payoutRemark,
 	}
-	if err := uc.checkSettlement(ctx, release, externalIDFor(payout, externalStepBalance), payout.Amount); err != nil {
+	if err := uc.reserve(ctx, release, payout); err != nil {
 		return nil, err
 	}
 
@@ -647,19 +724,18 @@ func (uc *PayoutUsecase) transfer(ctx context.Context, release *PayoutRelease, p
 	}
 	payout.DokuInquiryReferenceNo = inquiry.ReferenceNo
 	payout.Replayed = inquiry.Replayed
-	payout.Status = entity.PayoutStatusInquiry
 	if inquiry.Replayed {
 		// DOKU already holds this transfer, so the state it reports is final
 		// for this release: no payment is sent after a replayed inquiry.
 		if err := uc.reconcile(ctx, release, payout); err != nil {
 			return nil, uc.failTransfer(ctx, release, payout, "transaction status")
 		}
-		if err := release.Payouts.Update(ctx, payout); err != nil {
+		if err := uc.save(ctx, release, payout, entity.PayoutStatusInquiry); err != nil {
 			return nil, err
 		}
 		return payout, nil
 	}
-	if err := release.Payouts.Update(ctx, payout); err != nil {
+	if err := uc.save(ctx, release, payout, entity.PayoutStatusInquiry); err != nil {
 		return nil, err
 	}
 
@@ -678,7 +754,7 @@ func (uc *PayoutUsecase) transfer(ctx context.Context, release *PayoutRelease, p
 	payout.Replayed = payout.Replayed || paid.Replayed
 	payout.Status = entity.PayoutStatusSubmitted
 	payout.LastError = ""
-	if err := release.Payouts.Update(ctx, payout); err != nil {
+	if err := uc.save(ctx, release, payout, entity.PayoutStatusInquiry); err != nil {
 		return nil, err
 	}
 
@@ -687,24 +763,42 @@ func (uc *PayoutUsecase) transfer(ctx context.Context, release *PayoutRelease, p
 	// failed reconciliation keeps the payout submitted: DOKU has the transfer.
 	if paid.Replayed {
 		if err := uc.reconcile(ctx, release, payout); err != nil {
-			payout.LastError = "transaction status check failed"
-			if err := release.Payouts.Update(ctx, payout); err != nil {
-				return nil, err
-			}
-		} else if err := release.Payouts.Update(ctx, payout); err != nil {
+			payout.LastError = payoutStatusCheckFailed
+		}
+		if err := uc.save(ctx, release, payout, entity.PayoutStatusSubmitted); err != nil {
 			return nil, err
 		}
 	}
 	return payout, nil
 }
 
+// save writes a payout's state. The status moves only while the row is still
+// in from, the status this copy was read with. A stale copy fails here, before
+// any other column is written. The other columns follow through Update.
+func (uc *PayoutUsecase) save(ctx context.Context, release *PayoutRelease, payout *entity.Payout, from string) error {
+	moved, err := release.Payouts.Transition(ctx, payout.ID, from, payout.Status)
+	if err != nil {
+		return err
+	}
+	if !moved {
+		return payoutStateChangedError()
+	}
+	return release.Payouts.Update(ctx, payout)
+}
+
 // failTransfer records a failed provider step without the provider's raw
 // response, which can echo the beneficiary account number. The payout keeps
 // its state, so the next release retries the same step with the same key.
+// A failed step never changes the in-memory status, so the state saved is the
+// one the payout was read with.
 func (uc *PayoutUsecase) failTransfer(ctx context.Context, release *PayoutRelease, payout *entity.Payout, step string) error {
 	payout.LastError = step + " failed"
-	if err := release.Payouts.Update(ctx, payout); err != nil {
+	if err := uc.save(ctx, release, payout, payout.Status); err != nil {
 		return err
 	}
 	return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_TRANSFER_FAILED", step+" failed, retry the release")
+}
+
+func payoutStateChangedError() error {
+	return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_STATE_CHANGED", "the payout changed while it was being processed, retry the release")
 }

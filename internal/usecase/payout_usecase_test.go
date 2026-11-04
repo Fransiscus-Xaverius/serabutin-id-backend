@@ -1,11 +1,13 @@
 package usecase
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/dto"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/doku"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/encryption"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/idempotency"
 )
 
 type fakeSecretBox struct{}
@@ -379,12 +383,18 @@ func TestPayoutUsecase_Get_ReturnsStoredAccountWithoutDecrypting(t *testing.T) {
 	assert.Equal(t, "enc:1234567890", account.AccountNumberEncrypted)
 }
 
+// fakePayoutRepo mirrors the gorm repository: Update never writes status,
+// Transition is the only status write, and every write refreshes updated_at.
+// A mutex makes it safe for the concurrent-release test.
 type fakePayoutRepo struct {
+	mu     sync.Mutex
 	rows   map[uint]*entity.Payout
 	nextID uint
 }
 
 func (f *fakePayoutRepo) find(match func(*entity.Payout) bool) (*entity.Payout, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, row := range f.rows {
 		if match(row) {
 			copied := *row
@@ -395,6 +405,8 @@ func (f *fakePayoutRepo) find(match func(*entity.Payout) bool) (*entity.Payout, 
 }
 
 func (f *fakePayoutRepo) Create(ctx context.Context, p *entity.Payout) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.rows == nil {
 		f.rows = map[uint]*entity.Payout{}
 	}
@@ -423,9 +435,41 @@ func (f *fakePayoutRepo) FindByPartnerReferenceNo(ctx context.Context, partnerRe
 	return f.find(func(p *entity.Payout) bool { return p.PartnerReferenceNo == partnerReferenceNo })
 }
 
+func (f *fakePayoutRepo) SumInFlight(ctx context.Context, excludePayoutID uint) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var total int64
+	for _, row := range f.rows {
+		if row.ID == excludePayoutID {
+			continue
+		}
+		if row.Status == entity.PayoutStatusSubmitted || row.Status == entity.PayoutStatusInquiry {
+			total += row.Amount
+		}
+	}
+	return total, nil
+}
+
+func (f *fakePayoutRepo) Transition(ctx context.Context, payoutID uint, from, to string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, ok := f.rows[payoutID]
+	if !ok {
+		return false, apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")
+	}
+	if row.Status != from {
+		return false, nil
+	}
+	row.Status = to
+	row.UpdatedAt = time.Now()
+	return true, nil
+}
+
 // FindSubmitted mirrors the gorm query: unreconciled rows first, then the
 // least recently reconciled, then the oldest update.
 func (f *fakePayoutRepo) FindSubmitted(ctx context.Context, limit int, reconciledBefore time.Time) ([]*entity.Payout, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var candidates []*entity.Payout
 	for _, row := range f.rows {
 		if row.Status != entity.PayoutStatusSubmitted {
@@ -456,6 +500,8 @@ func (f *fakePayoutRepo) FindSubmitted(ctx context.Context, limit int, reconcile
 // FindStalledInquiry mirrors the gorm query: inquiry rows not updated since
 // updatedBefore, oldest update first.
 func (f *fakePayoutRepo) FindStalledInquiry(ctx context.Context, limit int, updatedBefore time.Time) ([]*entity.Payout, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var candidates []*entity.Payout
 	for _, row := range f.rows {
 		if row.Status != entity.PayoutStatusInquiry || !row.UpdatedAt.Before(updatedBefore) {
@@ -484,11 +530,15 @@ func capPayouts(rows []*entity.Payout, limit int) []*entity.Payout {
 }
 
 func (f *fakePayoutRepo) Update(ctx context.Context, p *entity.Payout) error {
-	if _, ok := f.rows[p.ID]; !ok {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stored, ok := f.rows[p.ID]
+	if !ok {
 		return apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")
 	}
 	p.UpdatedAt = time.Now()
 	copied := *p
+	copied.Status = stored.Status
 	f.rows[p.ID] = &copied
 	return nil
 }
@@ -520,10 +570,13 @@ func (f *fakePaymentLookup) FindByBookingID(ctx context.Context, bookingID uint)
 }
 
 type fakeTransferGateway struct {
+	mu           sync.Mutex
 	inquiries    []doku.TransferInquiryRequest
 	payments     []doku.TransferPaymentRequest
 	statuses     []string
 	balanceCalls int
+	// balanceHook runs before a balance answer, to widen a race window.
+	balanceHook func()
 	// The X-EXTERNAL-ID each request kind was sent with, in call order.
 	inquiryIDs []string
 	paymentIDs []string
@@ -545,6 +598,8 @@ type fakeTransferGateway struct {
 }
 
 func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, externalID string, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.inquiries = append(f.inquiries, req)
 	f.inquiryIDs = append(f.inquiryIDs, externalID)
 	if f.inquiryErr != nil {
@@ -557,6 +612,8 @@ func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, externalID st
 }
 
 func (f *fakeTransferGateway) TransferPayment(ctx context.Context, externalID string, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.payments = append(f.payments, req)
 	f.paymentIDs = append(f.paymentIDs, externalID)
 	if f.paymentErr != nil {
@@ -569,6 +626,8 @@ func (f *fakeTransferGateway) TransferPayment(ctx context.Context, externalID st
 }
 
 func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, externalID string, partnerReferenceNo string) (*doku.TransactionStatusResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.statusIDs = append(f.statusIDs, externalID)
 	f.statuses = append(f.statuses, partnerReferenceNo)
 	if err, ok := f.statusErrByRef[partnerReferenceNo]; ok {
@@ -587,6 +646,11 @@ func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, externalID 
 }
 
 func (f *fakeTransferGateway) BalanceInquiry(ctx context.Context, externalID string, profileID string) (*doku.BalanceResult, error) {
+	if f.balanceHook != nil {
+		f.balanceHook()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.balanceIDs = append(f.balanceIDs, externalID)
 	f.balanceCalls++
 	if f.balanceErr != nil {
@@ -1129,4 +1193,94 @@ func settledBalance(settled, pending string) *doku.BalanceResult {
 		{Type: doku.BalanceAccountMerchantIDR, Currency: "IDR", Available: settled},
 		{Type: doku.BalanceAccountMerchantPendingIDR, Currency: "IDR", Available: pending},
 	}}
+}
+
+// addPaidBooking adds a completed booking of provider 7 with a paid payment.
+// Its payout is the booking's subtotal.
+func addPaidBooking(f *releaseFixture, id uint, subTotal int64) {
+	f.bookings.rows[id] = &entity.Booking{ID: id, ProviderID: 7, Status: bookingStatusCompleted, SubTotal: subTotal, PlatformFee: 15000, Total: subTotal + 15000}
+	f.payments.byBooking[id] = &entity.Payment{BookingID: id, Status: entity.PaymentStatusPaid, Amount: subTotal + 15000, Currency: payoutCurrency}
+}
+
+func TestPayoutUsecase_Release_InFlightPayoutsCountAgainstTheSettledBalance(t *testing.T) {
+	f := newReleaseFixture(t)
+	addPaidBooking(f, 43, 150000)
+	_, err := f.uc.Release(context.Background(), 43)
+	require.NoError(t, err)
+	f.gateway.balance = settledBalance("150000.00", "0.00")
+
+	_, err = f.uc.Release(context.Background(), 42)
+
+	requireDomainCode(t, err, "PAYOUT_INSUFFICIENT_SETTLED_BALANCE")
+	assert.Len(t, f.gateway.inquiries, 1, "only the first release sent an inquiry")
+	assert.Len(t, f.gateway.payments, 1)
+}
+
+func TestPayoutUsecase_Release_PassesWhenTheBalanceCoversTheInFlightPayouts(t *testing.T) {
+	f := newReleaseFixture(t)
+	addPaidBooking(f, 43, 150000)
+	_, err := f.uc.Release(context.Background(), 43)
+	require.NoError(t, err)
+	f.gateway.balance = settledBalance("300000.00", "0.00")
+
+	_, err = f.uc.Release(context.Background(), 42)
+
+	require.NoError(t, err)
+	assert.Len(t, f.gateway.payments, 2)
+}
+
+func TestPayoutUsecase_Release_TwoConcurrentReleasesCannotBothPassTheGate(t *testing.T) {
+	f := newReleaseFixture(t)
+	addPaidBooking(f, 43, 150000)
+	f.gateway.balance = settledBalance("150000.00", "0.00")
+	// Widen the window between reading the balance and reserving the payout,
+	// so an unguarded gate lets both releases read the same balance.
+	f.gateway.balanceHook = func() { time.Sleep(100 * time.Millisecond) }
+
+	bookings := []uint{42, 43}
+	errs := make([]error, len(bookings))
+	var wg sync.WaitGroup
+	for i, booking := range bookings {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = f.uc.Release(context.Background(), booking)
+		}()
+	}
+	wg.Wait()
+
+	passed := 0
+	for _, err := range errs {
+		if err == nil {
+			passed++
+			continue
+		}
+		requireDomainCode(t, err, "PAYOUT_INSUFFICIENT_SETTLED_BALANCE")
+	}
+	assert.Equal(t, 1, passed, "exactly one release may pass on a balance that covers one payout")
+	assert.Len(t, f.gateway.inquiries, 1)
+	assert.Len(t, f.gateway.payments, 1)
+}
+
+// The beneficiary fingerprint is the encryption-keyed digest, never the plain
+// digest of the same canonical request.
+func TestPayoutUsecase_Release_BeneficiaryFingerprintIsTheKeyedDigest(t *testing.T) {
+	cipher, err := encryption.NewCipher(bytes.Repeat([]byte{7}, encryption.KeySize), "v1")
+	require.NoError(t, err)
+	f := newReleaseFixture(t)
+	f.uc.secret = cipher
+	account := f.accounts.byUser[7]
+	account.AccountNumberEncrypted, err = cipher.Encrypt("1234567890")
+	require.NoError(t, err)
+	account.AccountHolderNameEncrypted, err = cipher.Encrypt("Siti Rahayu")
+	require.NoError(t, err)
+	account.AccountFingerprint = cipher.Fingerprint("1234567890")
+
+	payout, err := f.uc.Release(context.Background(), 42)
+	require.NoError(t, err)
+
+	canonical := idempotency.CanonicalRequest("42", "150000", payoutCurrency, "BCAIDJA", account.AccountFingerprint, "Siti Rahayu")
+	assert.Equal(t, cipher.Fingerprint(canonical), payout.BeneficiaryFingerprint)
+	assert.NotEqual(t, idempotency.Fingerprint(canonical), payout.BeneficiaryFingerprint, "the plain digest must never be stored")
+	assert.Equal(t, cipher.Fingerprint("1234567890"), account.AccountFingerprint, "the account fingerprint is keyed too")
 }

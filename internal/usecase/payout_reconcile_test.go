@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 
 var (
 	errTestDOKUDown    = errors.New("doku unavailable")
-	errTestDOKUUnknown = errors.New("doku has no record of this partner reference")
+	errTestDOKUUnknown = doku.ErrTransactionNotFound
 )
 
 // reconcileFixture releases booking 42 (PO-42) and adds two more submitted
@@ -238,6 +239,42 @@ func TestPayoutUsecase_ReconcileWorker_RunsOncePassAndStopsOnCancel(t *testing.T
 		t.Fatal("the reconcile worker did not stop after its context was cancelled")
 	}
 	assert.Equal(t, entity.PayoutStatusPaid, statusOf(t, f, "PO-42"))
+}
+
+// A deployment without the release configuration runs no pass. The worker
+// returns at once and says so once in the log.
+func TestPayoutUsecase_ReconcileWorker_DoesNothingWhenTheReleaseIsNotConfigured(t *testing.T) {
+	cases := map[string]func(*PayoutRelease){
+		"no hub profile":    func(r *PayoutRelease) { r.ProfileID = "" },
+		"no source account": func(r *PayoutRelease) { r.FromAccount = "" },
+	}
+	for name, unset := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := reconcileFixture(t)
+			answer(f, "PO-42", doku.TransactionStatusSuccess)
+			f.gateway.inquiries, f.gateway.statuses = nil, nil
+			unset(f.uc.release)
+			buf := captureLog(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			done := make(chan struct{})
+			go func() {
+				StartPayoutReconcileWorker(ctx, f.uc, time.Millisecond)
+				close(done)
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the reconcile worker kept running without the release configuration")
+			}
+			assert.Empty(t, f.gateway.statuses)
+			assert.Empty(t, f.gateway.inquiries)
+			assert.Equal(t, entity.PayoutStatusSubmitted, statusOf(t, f, "PO-42"))
+			assert.Equal(t, 1, strings.Count(buf.String(), "payout reconcile worker not started"), "the refusal is logged once")
+		})
+	}
 }
 
 // The status setter is gone: the only way a payout's status changes is the

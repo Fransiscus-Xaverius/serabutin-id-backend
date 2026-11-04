@@ -35,6 +35,7 @@ type PayoutModel struct {
 	PaidAt    *time.Time
 	// LastReconciledAt is indexed: the reconciliation queries filter on it.
 	LastReconciledAt *time.Time `gorm:"index"`
+	ReadAttempts     int        `gorm:"not null;default:0"`
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }

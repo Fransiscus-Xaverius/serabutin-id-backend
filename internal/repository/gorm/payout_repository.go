@@ -84,6 +84,38 @@ func (r *PayoutRepository) findBatch(ctx context.Context, limit int, query *gorm
 	return out, nil
 }
 
+// SumInFlight totals the payouts that may already hold money at DOKU: those
+// submitted, and those still in inquiry, whose payment may have gone out.
+func (r *PayoutRepository) SumInFlight(ctx context.Context, excludePayoutID uint) (int64, error) {
+	var total int64
+	err := r.db.WithContext(ctx).
+		Model(&model.PayoutModel{}).
+		Select("COALESCE(SUM(amount), 0)").
+		Where("status IN ?", []string{entity.PayoutStatusSubmitted, entity.PayoutStatusInquiry}).
+		Where("id <> ?", excludePayoutID).
+		Scan(&total).Error
+	if err != nil {
+		return 0, payoutDBError(err)
+	}
+	return total, nil
+}
+
+// Transition is a compare-and-set on status: the row moves only if it is still
+// in from. A zero RowsAffected means another writer got there first.
+func (r *PayoutRepository) Transition(ctx context.Context, payoutID uint, from, to string) (bool, error) {
+	result := r.db.WithContext(ctx).
+		Model(&model.PayoutModel{}).
+		Where("id = ? AND status = ?", payoutID, from).
+		Updates(map[string]interface{}{
+			"status":     to,
+			"updated_at": time.Now(),
+		})
+	if result.Error != nil {
+		return false, payoutDBError(result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
 func (r *PayoutRepository) Update(ctx context.Context, payout *entity.Payout) error {
 	result := r.db.WithContext(ctx).
 		Model(&model.PayoutModel{}).
@@ -113,15 +145,15 @@ func (r *PayoutRepository) findOne(ctx context.Context, query string, arg interf
 	return toPayoutEntity(&m), nil
 }
 
-// payoutUpdates lists every mutable column. The booking, the creation time and
-// the primary key are fixed once the row exists. The nullable keys map "" to NULL.
+// payoutUpdates lists every mutable column except status, which only
+// Transition writes. The booking, the creation time and the primary key are
+// fixed once the row exists. The nullable keys map "" to NULL.
 func payoutUpdates(p *entity.Payout) map[string]interface{} {
 	return map[string]interface{}{
 		"provider_id":               p.ProviderID,
 		"amount":                    p.Amount,
 		"currency":                  p.Currency,
 		"channel":                   p.Channel,
-		"status":                    p.Status,
 		"partner_reference_no":      nullableString(p.PartnerReferenceNo),
 		"idempotency_key":           nullableString(p.IdempotencyKey),
 		"request_fingerprint":       p.RequestFingerprint,
@@ -138,6 +170,8 @@ func payoutUpdates(p *entity.Payout) map[string]interface{} {
 		"last_error":                                p.LastError,
 		"paid_at":                                   p.PaidAt,
 		"last_reconciled_at":                        p.LastReconciledAt,
+		"read_attempts":                             p.ReadAttempts,
+		"updated_at":                                time.Now(),
 	}
 }
 
@@ -166,6 +200,7 @@ func toPayoutModel(p *entity.Payout) *model.PayoutModel {
 		LastError:                             p.LastError,
 		PaidAt:                                p.PaidAt,
 		LastReconciledAt:                      p.LastReconciledAt,
+		ReadAttempts:                          p.ReadAttempts,
 		CreatedAt:                             p.CreatedAt,
 		UpdatedAt:                             p.UpdatedAt,
 	}
@@ -196,6 +231,7 @@ func toPayoutEntity(m *model.PayoutModel) *entity.Payout {
 		LastError:                             m.LastError,
 		PaidAt:                                m.PaidAt,
 		LastReconciledAt:                      m.LastReconciledAt,
+		ReadAttempts:                          m.ReadAttempts,
 		CreatedAt:                             m.CreatedAt,
 		UpdatedAt:                             m.UpdatedAt,
 	}

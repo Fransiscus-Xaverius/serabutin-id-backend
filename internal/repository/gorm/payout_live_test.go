@@ -102,14 +102,97 @@ func TestLivePayout_EmptyKeysStoreNullAndUpdatePersists(t *testing.T) {
 
 	found.PartnerReferenceNo = idempotency.PayoutKey(found.BookingID)
 	found.ExternalID = "9001"
-	found.Status = entity.PayoutStatusSubmitted
 	require.NoError(t, repo.Update(ctx, found))
+	moved, err := repo.Transition(ctx, found.ID, entity.PayoutStatusPending, entity.PayoutStatusSubmitted)
+	require.NoError(t, err)
+	require.True(t, moved)
 
 	stored, err := repo.FindByPartnerReferenceNo(ctx, "PO-50")
 	require.NoError(t, err)
 	assert.Equal(t, first.ID, stored.ID)
 	assert.Equal(t, "9001", stored.ExternalID)
 	assert.Equal(t, entity.PayoutStatusSubmitted, stored.Status)
+}
+
+func TestLivePayout_TransitionOnlyMovesFromTheExpectedState(t *testing.T) {
+	db := setupBountyLiveDB(t)
+	require.NoError(t, db.AutoMigrate(&model.PayoutModel{}))
+	ctx := context.Background()
+	repo := NewPayoutRepository(db)
+
+	payout := &entity.Payout{BookingID: 60, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusInquiry, PartnerReferenceNo: "PO-60"}
+	require.NoError(t, repo.Create(ctx, payout))
+
+	moved, err := repo.Transition(ctx, payout.ID, entity.PayoutStatusInquiry, entity.PayoutStatusPaid)
+	require.NoError(t, err)
+	assert.True(t, moved)
+
+	// A stale copy still reads inquiry: it cannot move the paid payout back.
+	moved, err = repo.Transition(ctx, payout.ID, entity.PayoutStatusInquiry, entity.PayoutStatusSubmitted)
+	require.NoError(t, err)
+	assert.False(t, moved)
+
+	stored, err := repo.FindByID(ctx, payout.ID)
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutStatusPaid, stored.Status)
+}
+
+// Update writes every column but status. A stale copy's status never lands,
+// and every write refreshes updated_at so the workers' backoff applies.
+func TestLivePayout_UpdateNeverWritesStatusAndRefreshesUpdatedAt(t *testing.T) {
+	db := setupBountyLiveDB(t)
+	require.NoError(t, db.AutoMigrate(&model.PayoutModel{}))
+	ctx := context.Background()
+	repo := NewPayoutRepository(db)
+
+	payout := &entity.Payout{BookingID: 61, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusInquiry, PartnerReferenceNo: "PO-61"}
+	require.NoError(t, repo.Create(ctx, payout))
+	require.NoError(t, db.Model(&model.PayoutModel{}).Where("id = ?", payout.ID).UpdateColumn("updated_at", time.Now().Add(-10*time.Minute)).Error)
+
+	payout.Status = entity.PayoutStatusPaid
+	payout.ReadAttempts = 3
+	require.NoError(t, repo.Update(ctx, payout))
+
+	stored, err := repo.FindByID(ctx, payout.ID)
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutStatusInquiry, stored.Status, "Update must not write status")
+	assert.Equal(t, 3, stored.ReadAttempts)
+	assert.WithinDuration(t, time.Now(), stored.UpdatedAt, time.Minute, "a write refreshes updated_at")
+
+	require.NoError(t, db.Model(&model.PayoutModel{}).Where("id = ?", payout.ID).UpdateColumn("updated_at", time.Now().Add(-10*time.Minute)).Error)
+	moved, err := repo.Transition(ctx, payout.ID, entity.PayoutStatusInquiry, entity.PayoutStatusFailed)
+	require.NoError(t, err)
+	require.True(t, moved)
+	stored, err = repo.FindByID(ctx, payout.ID)
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now(), stored.UpdatedAt, time.Minute, "a transition refreshes updated_at")
+}
+
+func TestLivePayout_SumInFlightCountsSubmittedAndInquiryOnly(t *testing.T) {
+	db := setupBountyLiveDB(t)
+	require.NoError(t, db.AutoMigrate(&model.PayoutModel{}))
+	ctx := context.Background()
+	repo := NewPayoutRepository(db)
+
+	rows := []*entity.Payout{
+		{BookingID: 70, Amount: 100, Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: "PO-70"},
+		{BookingID: 71, Amount: 50, Status: entity.PayoutStatusInquiry, PartnerReferenceNo: "PO-71"},
+		{BookingID: 72, Amount: 1000, Status: entity.PayoutStatusPaid, PartnerReferenceNo: "PO-72"},
+		{BookingID: 73, Amount: 10000, Status: entity.PayoutStatusFailed, PartnerReferenceNo: "PO-73"},
+		{BookingID: 74, Amount: 100000, Status: entity.PayoutStatusPending, PartnerReferenceNo: "PO-74"},
+	}
+	for _, row := range rows {
+		row.ProviderID, row.Currency, row.Channel = 7, "IDR", "BI_FAST"
+		require.NoError(t, repo.Create(ctx, row))
+	}
+
+	total, err := repo.SumInFlight(ctx, 0)
+	require.NoError(t, err)
+	assert.Equal(t, int64(150), total)
+
+	total, err = repo.SumInFlight(ctx, rows[0].ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(50), total, "the excluded payout does not count itself")
 }
 
 func TestLivePayout_FindMissing(t *testing.T) {

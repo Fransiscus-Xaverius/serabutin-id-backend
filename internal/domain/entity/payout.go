@@ -46,6 +46,9 @@ type Payout struct {
 	// LastReconciledAt is the last time the worker or the webhook asked DOKU
 	// for this payout's status. A recent attempt is not repeated.
 	LastReconciledAt *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// ReadAttempts counts the read-only DOKU calls made for this payout. Each
+	// call takes the next number as its X-EXTERNAL-ID, so no read repeats one.
+	ReadAttempts int
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }

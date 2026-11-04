@@ -459,8 +459,32 @@ func (s *syncFakeStore) FindStalledInquiry(ctx context.Context, limit int, updat
 	return nil, nil
 }
 
+func (s *syncFakeStore) SumInFlight(ctx context.Context, excludePayoutID uint) (int64, error) {
+	var total int64
+	for _, row := range s.rows {
+		if row.ID != excludePayoutID && (row.Status == entity.PayoutStatusSubmitted || row.Status == entity.PayoutStatusInquiry) {
+			total += row.Amount
+		}
+	}
+	return total, nil
+}
+
+func (s *syncFakeStore) Transition(ctx context.Context, payoutID uint, from, to string) (bool, error) {
+	row, ok := s.rows[payoutID]
+	if !ok || row.Status != from {
+		return false, nil
+	}
+	row.Status = to
+	return true, nil
+}
+
 func (s *syncFakeStore) Update(ctx context.Context, p *entity.Payout) error {
+	stored, ok := s.rows[p.ID]
+	if !ok {
+		return apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")
+	}
 	copied := *p
+	copied.Status = stored.Status
 	s.rows[p.ID] = &copied
 	return nil
 }

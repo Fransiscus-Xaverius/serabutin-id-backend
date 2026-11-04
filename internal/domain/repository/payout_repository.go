@@ -7,6 +7,8 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 )
 
+// PayoutRepository stores payouts. Only the payout usecase may drive a payout:
+// its status changes go through Transition, and nothing else may change it.
 type PayoutRepository interface {
 	// Create stores a new payout. A second payout for the same booking, or a
 	// partner reference number already in use, is rejected.
@@ -22,8 +24,14 @@ type PayoutRepository interface {
 	// FindStalledInquiry returns up to limit payouts in inquiry not updated
 	// since updatedBefore, for re-driving.
 	FindStalledInquiry(ctx context.Context, limit int, updatedBefore time.Time) ([]*entity.Payout, error)
-	// Update writes the mutable columns of a payout. It is deliberately
-	// exported: the only holder of this repository is PayoutUsecase, the one
-	// package allowed to change a payout's state. Nothing else may call it.
+	// SumInFlight totals the amounts of the payouts that may already hold money
+	// at DOKU: submitted, or in inquiry. The payout excludePayoutID is left out.
+	SumInFlight(ctx context.Context, excludePayoutID uint) (int64, error)
+	// Transition moves a payout from `from` to `to`, but only while it is still
+	// in `from`. It reports false when the row is in another state, so a stale
+	// copy cannot move a payout backwards. A from equal to to is a pure guard.
+	Transition(ctx context.Context, payoutID uint, from, to string) (bool, error)
+	// Update writes every column except status: references, external id,
+	// read attempts and timestamps. It never writes status; Transition does.
 	Update(ctx context.Context, payout *entity.Payout) error
 }

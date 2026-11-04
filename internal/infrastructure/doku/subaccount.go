@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -59,6 +60,12 @@ const (
 )
 
 var subAccountZone = time.FixedZone("WIB", 7*60*60)
+
+// ErrTransactionNotFound is DOKU's 404 "Transaction not found" from
+// transactions-status: DOKU has no record of the partner reference. Only this
+// error proves that no transfer exists. Every other failure leaves the
+// transfer's state unknown.
+var ErrTransactionNotFound = errors.New("doku has no record of this partner reference")
 
 // SubAccountClient pays a Mitra's bank account through DOKU Sub-Account V2.
 // It authenticates with a cached B2B bearer token and signs each call with
@@ -148,10 +155,19 @@ func (c *SubAccountClient) TransactionStatus(ctx context.Context, externalID str
 		return nil, fmt.Errorf("doku transaction status requires a partner reference no")
 	}
 
-	var parsed transactionStatusResponse
-	err := c.postJSON(ctx, externalID, subAccountStatusPath, transactionStatusRequest{PartnerReferenceNo: partnerReferenceNo}, &parsed)
+	status, raw, err := c.call(ctx, externalID, subAccountStatusPath, transactionStatusRequest{PartnerReferenceNo: partnerReferenceNo})
 	if err != nil {
 		return nil, err
+	}
+	if status == http.StatusNotFound {
+		return nil, ErrTransactionNotFound
+	}
+	if status < 200 || status >= 300 {
+		return nil, dokuError(subAccountStatusPath, status, raw)
+	}
+	var parsed transactionStatusResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("parse doku sub-account %s response", subAccountStatusPath)
 	}
 	if parsed.PartnerReferenceNo != partnerReferenceNo {
 		return nil, fmt.Errorf("doku sub-account %s response does not match partner reference no %q", subAccountStatusPath, partnerReferenceNo)
