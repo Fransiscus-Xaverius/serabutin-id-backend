@@ -450,6 +450,17 @@ func (s *syncFakeStore) FindByPartnerReferenceNo(ctx context.Context, ref string
 	return s.find(func(p *entity.Payout) bool { return p.PartnerReferenceNo == ref })
 }
 
+func (s *syncFakeStore) FindSubmitted(ctx context.Context, limit int) ([]*entity.Payout, error) {
+	var out []*entity.Payout
+	for _, row := range s.rows {
+		if row.Status == entity.PayoutStatusSubmitted && len(out) < limit {
+			copied := *row
+			out = append(out, &copied)
+		}
+	}
+	return out, nil
+}
+
 func (s *syncFakeStore) Update(ctx context.Context, p *entity.Payout) error {
 	copied := *p
 	s.rows[p.ID] = &copied

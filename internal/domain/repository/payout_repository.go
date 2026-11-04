@@ -15,5 +15,8 @@ type PayoutRepository interface {
 	FindByBookingID(ctx context.Context, bookingID uint) (*entity.Payout, error)
 	// FindByPartnerReferenceNo returns the payout that carries the key sent to DOKU.
 	FindByPartnerReferenceNo(ctx context.Context, partnerReferenceNo string) (*entity.Payout, error)
+	// FindSubmitted returns up to limit payouts still awaiting DOKU's outcome,
+	// oldest first, for reconciliation.
+	FindSubmitted(ctx context.Context, limit int) ([]*entity.Payout, error)
 	Update(ctx context.Context, payout *entity.Payout) error
 }

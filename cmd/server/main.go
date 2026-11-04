@@ -428,6 +428,12 @@ func main() {
 	paymentPollerCtx, stopPaymentPoller := context.WithCancel(context.Background())
 	go usecase.StartPaymentExpiryWorker(paymentPollerCtx, paymentUsecase, time.Minute)
 
+	// Payout reconciliation: submitted transfers are resolved from DOKU's
+	// transactions-status API every minute, so a missed or unroutable transfer
+	// notification never leaves a Mitra's payout pending forever.
+	payoutReconcileCtx, stopPayoutReconcile := context.WithCancel(context.Background())
+	go usecase.StartPayoutReconcileWorker(payoutReconcileCtx, payoutUsecase, time.Minute)
+
 	go func() {
 		if err := app.Listen(fmt.Sprintf(":%d", cfg.Port)); err != nil {
 			logger.Log.Fatal().Err(err).Msg("server failed to start")
@@ -442,6 +448,7 @@ func main() {
 
 	stopBroadcastPoller()
 	stopPaymentPoller()
+	stopPayoutReconcile()
 
 	if err := app.Shutdown(); err != nil {
 		logger.Log.Error().Err(err).Msg("error during shutdown")

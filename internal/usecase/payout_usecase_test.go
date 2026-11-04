@@ -420,6 +420,19 @@ func (f *fakePayoutRepo) FindByPartnerReferenceNo(ctx context.Context, partnerRe
 	return f.find(func(p *entity.Payout) bool { return p.PartnerReferenceNo == partnerReferenceNo })
 }
 
+func (f *fakePayoutRepo) FindSubmitted(ctx context.Context, limit int) ([]*entity.Payout, error) {
+	var out []*entity.Payout
+	for id := uint(1); id <= f.nextID && len(out) < limit; id++ {
+		row, ok := f.rows[id]
+		if !ok || row.Status != entity.PayoutStatusSubmitted {
+			continue
+		}
+		copied := *row
+		out = append(out, &copied)
+	}
+	return out, nil
+}
+
 func (f *fakePayoutRepo) Update(ctx context.Context, p *entity.Payout) error {
 	if _, ok := f.rows[p.ID]; !ok {
 		return apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")
@@ -467,8 +480,12 @@ type fakeTransferGateway struct {
 	paymentErr    error
 	statusResult  *doku.TransactionStatusResult
 	statusErr     error
-	balance       *doku.BalanceResult
-	balanceErr    error
+	// statusByRef and statusErrByRef answer one reference, ahead of the
+	// shared statusResult and statusErr.
+	statusByRef    map[string]*doku.TransactionStatusResult
+	statusErrByRef map[string]error
+	balance        *doku.BalanceResult
+	balanceErr     error
 }
 
 func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
@@ -495,6 +512,12 @@ func (f *fakeTransferGateway) TransferPayment(ctx context.Context, req doku.Tran
 
 func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, partnerReferenceNo string) (*doku.TransactionStatusResult, error) {
 	f.statuses = append(f.statuses, partnerReferenceNo)
+	if err, ok := f.statusErrByRef[partnerReferenceNo]; ok {
+		return nil, err
+	}
+	if result, ok := f.statusByRef[partnerReferenceNo]; ok {
+		return result, nil
+	}
 	if f.statusErr != nil {
 		return nil, f.statusErr
 	}
@@ -673,7 +696,9 @@ func TestPayoutUsecase_Release_PaidPayoutIsReturnedUnchangedWithoutAnyProviderCa
 	f := newReleaseFixture(t)
 	first, err := f.uc.Release(context.Background(), 42)
 	require.NoError(t, err)
-	require.NoError(t, f.uc.ApplyTransferStatus(context.Background(), "PO-42", entity.PayoutStatusPaid))
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: doku.TransactionStatusSuccess}
+	_, err = f.uc.SyncTransferStatus(context.Background(), "PO-42")
+	require.NoError(t, err)
 	f.gateway.inquiries = nil
 
 	again, err := f.uc.Release(context.Background(), 42)
@@ -710,19 +735,21 @@ func TestPayoutUsecase_Release_RefusesAChangedHolderNameForTheSameBooking(t *tes
 	requireDomainCode(t, err, "PAYOUT_DESTINATION_CHANGED")
 }
 
-func TestPayoutUsecase_ApplyTransferStatus_PaidPayoutIsNeverChanged(t *testing.T) {
-	f := newReleaseFixture(t)
-	payout, err := f.uc.Release(context.Background(), 42)
-	require.NoError(t, err)
+func TestPayoutUsecase_SyncTransferStatus_PaidPayoutIsNeverChangedByALaterAnswer(t *testing.T) {
+	f, payout := syncFixture(t)
 	ctx := context.Background()
-	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusPaid))
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: doku.TransactionStatusSuccess}
+	_, err := f.uc.SyncTransferStatus(ctx, "PO-42")
+	require.NoError(t, err)
 	paidAt := f.payouts.rows[payout.ID].PaidAt
 	require.NotNil(t, paidAt)
 	before := *f.payouts.rows[payout.ID]
 
-	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusPaid))
-	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusSubmitted))
-	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusFailed))
+	for _, code := range []string{doku.TransactionStatusPending, doku.TransactionStatusFailed, doku.TransactionStatusCanceled} {
+		f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: code}
+		_, err = f.uc.SyncTransferStatus(ctx, "PO-42")
+		require.NoError(t, err)
+	}
 
 	after := f.payouts.rows[payout.ID]
 	assert.Equal(t, entity.PayoutStatusPaid, after.Status)
@@ -730,14 +757,16 @@ func TestPayoutUsecase_ApplyTransferStatus_PaidPayoutIsNeverChanged(t *testing.T
 	assert.Equal(t, paidAt, after.PaidAt)
 }
 
-func TestPayoutUsecase_ApplyTransferStatus_SubmittedThenPaid(t *testing.T) {
-	f := newReleaseFixture(t)
-	_, err := f.uc.Release(context.Background(), 42)
-	require.NoError(t, err)
+func TestPayoutUsecase_SyncTransferStatus_PendingThenSuccessMarksPaid(t *testing.T) {
+	f, _ := syncFixture(t)
 	ctx := context.Background()
 
-	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusSubmitted))
-	require.NoError(t, f.uc.ApplyTransferStatus(ctx, "PO-42", entity.PayoutStatusPaid))
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: doku.TransactionStatusPending}
+	_, err := f.uc.SyncTransferStatus(ctx, "PO-42")
+	require.NoError(t, err)
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: doku.TransactionStatusSuccess}
+	_, err = f.uc.SyncTransferStatus(ctx, "PO-42")
+	require.NoError(t, err)
 
 	stored, err := f.payouts.FindByBookingID(ctx, 42)
 	require.NoError(t, err)
@@ -745,13 +774,15 @@ func TestPayoutUsecase_ApplyTransferStatus_SubmittedThenPaid(t *testing.T) {
 	assert.NotNil(t, stored.PaidAt)
 }
 
-func TestPayoutUsecase_ApplyTransferStatus_RejectsAnUnknownStatus(t *testing.T) {
-	f := newReleaseFixture(t)
-	_, err := f.uc.Release(context.Background(), 42)
-	require.NoError(t, err)
+func TestPayoutUsecase_SyncTransferStatus_UnknownCodeIsRejectedAndChangesNothing(t *testing.T) {
+	f, payout := syncFixture(t)
+	before := *f.payouts.rows[payout.ID]
+	f.gateway.statusResult = &doku.TransactionStatusResult{PartnerReferenceNo: "PO-42", LatestStatus: "bogus"}
 
-	err = f.uc.ApplyTransferStatus(context.Background(), "PO-42", "bogus")
-	requireDomainCode(t, err, "INVALID_TRANSFER_STATUS")
+	_, err := f.uc.SyncTransferStatus(context.Background(), "PO-42")
+
+	require.Error(t, err)
+	assert.Equal(t, before, *f.payouts.rows[payout.ID])
 }
 
 func TestPayoutUsecase_Release_PaysTheServiceAmountNotThePlatformFee(t *testing.T) {

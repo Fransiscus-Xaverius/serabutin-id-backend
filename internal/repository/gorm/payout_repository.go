@@ -46,6 +46,26 @@ func (r *PayoutRepository) FindByPartnerReferenceNo(ctx context.Context, partner
 	return r.findOne(ctx, "partner_reference_no = ?", partnerReferenceNo)
 }
 
+func (r *PayoutRepository) FindSubmitted(ctx context.Context, limit int) ([]*entity.Payout, error) {
+	if limit <= 0 {
+		return []*entity.Payout{}, nil
+	}
+	var models []model.PayoutModel
+	err := r.db.WithContext(ctx).
+		Where("status = ?", entity.PayoutStatusSubmitted).
+		Order("updated_at ASC, id ASC").
+		Limit(limit).
+		Find(&models).Error
+	if err != nil {
+		return nil, payoutDBError(err)
+	}
+	out := make([]*entity.Payout, 0, len(models))
+	for i := range models {
+		out = append(out, toPayoutEntity(&models[i]))
+	}
+	return out, nil
+}
+
 func (r *PayoutRepository) Update(ctx context.Context, payout *entity.Payout) error {
 	result := r.db.WithContext(ctx).
 		Model(&model.PayoutModel{}).

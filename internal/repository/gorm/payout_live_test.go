@@ -142,3 +142,35 @@ func requirePayoutNotFound(t *testing.T, err error) {
 	assert.Equal(t, apperror.ErrNotFound, domainErr.Err)
 	assert.Equal(t, "PAYOUT_NOT_FOUND", domainErr.Code)
 }
+
+func TestLivePayout_FindSubmittedReturnsOldestSubmittedOnly(t *testing.T) {
+	db := setupBountyLiveDB(t)
+	require.NoError(t, db.AutoMigrate(&model.PayoutModel{}))
+	ctx := context.Background()
+	repo := NewPayoutRepository(db)
+
+	rows := []*entity.Payout{
+		{BookingID: 60, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: "PO-60"},
+		{BookingID: 61, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusPending, PartnerReferenceNo: "PO-61"},
+		{BookingID: 62, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: "PO-62"},
+		{BookingID: 63, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusPaid, PartnerReferenceNo: "PO-63"},
+		{BookingID: 64, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: "PO-64"},
+	}
+	for _, row := range rows {
+		require.NoError(t, repo.Create(ctx, row))
+	}
+
+	submitted, err := repo.FindSubmitted(ctx, 2)
+	require.NoError(t, err)
+	require.Len(t, submitted, 2)
+	assert.Equal(t, "PO-60", submitted[0].PartnerReferenceNo, "oldest submitted payout comes first")
+	assert.Equal(t, "PO-62", submitted[1].PartnerReferenceNo)
+
+	all, err := repo.FindSubmitted(ctx, 10)
+	require.NoError(t, err)
+	assert.Len(t, all, 3, "pending and paid payouts are never returned")
+
+	none, err := repo.FindSubmitted(ctx, 0)
+	require.NoError(t, err)
+	assert.Empty(t, none)
+}

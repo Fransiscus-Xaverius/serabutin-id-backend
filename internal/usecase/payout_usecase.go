@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,8 @@ const (
 	payoutRemark           = "Serabutin payout"
 	bookingStatusConfirmed = "confirmed"
 	bookingStatusCompleted = "completed"
+	// payoutReconcileBatch bounds one reconciliation pass.
+	payoutReconcileBatch = 50
 )
 
 var _ TransferGateway = (*doku.SubAccountClient)(nil)
@@ -74,7 +77,7 @@ type TransferGateway interface {
 }
 
 // PayoutRelease holds what only the money-moving path needs. It is attached
-// with WithRelease; without it Release and ApplyTransferStatus refuse to run.
+// with WithRelease; without it Release and SyncTransferStatus refuse to run.
 type PayoutRelease struct {
 	Payouts     repository.PayoutRepository
 	Bookings    PayoutBookingLookup
@@ -390,42 +393,66 @@ func (uc *PayoutUsecase) SyncTransferStatus(ctx context.Context, partnerReferenc
 	return payout, nil
 }
 
-// ApplyTransferStatus moves a payout to the status DOKU reports for its
-// partnerReferenceNo. Repeating a status is a no-op, and a paid payout is
-// never changed again. The payout webhook does not use it: its outcome comes
-// from SyncTransferStatus.
-func (uc *PayoutUsecase) ApplyTransferStatus(ctx context.Context, partnerReferenceNo, status string) error {
+// ReconcileSubmitted asks DOKU for the outcome of up to limit submitted
+// payouts, oldest first, and records each answer through SyncTransferStatus.
+// A row that fails is logged and skipped, so one bad row cannot stall the
+// rest. It returns how many payouts left the submitted state.
+func (uc *PayoutUsecase) ReconcileSubmitted(ctx context.Context, limit int) (int, error) {
 	release, err := uc.releaseDeps()
 	if err != nil {
-		return err
+		return 0, err
 	}
-	payout, err := release.Payouts.FindByPartnerReferenceNo(ctx, partnerReferenceNo)
+	payouts, err := release.Payouts.FindSubmitted(ctx, limit)
 	if err != nil {
-		return err
+		return 0, err
+	}
+	resolved := 0
+	for _, payout := range payouts {
+		synced, err := uc.SyncTransferStatus(ctx, payout.PartnerReferenceNo)
+		if err != nil {
+			log.Printf("[PayoutReconcile] payout %d (%s) not reconciled: %v", payout.ID, payout.PartnerReferenceNo, err)
+			continue
+		}
+		if synced.Status != entity.PayoutStatusSubmitted {
+			resolved++
+		}
+	}
+	return resolved, nil
+}
+
+// StartPayoutReconcileWorker reconciles submitted payouts every interval until
+// ctx is cancelled. It is the guarantee behind the transfer webhook: a missed
+// or unroutable notification is still resolved here, from DOKU's status API.
+func StartPayoutReconcileWorker(ctx context.Context, uc *PayoutUsecase, interval time.Duration) {
+	if uc == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = time.Minute
 	}
 
-	switch status {
-	case entity.PayoutStatusSubmitted:
-		if payout.Status != entity.PayoutStatusPending && payout.Status != entity.PayoutStatusInquiry {
-			return nil
+	run := func() {
+		resolved, err := uc.ReconcileSubmitted(ctx, payoutReconcileBatch)
+		if err != nil {
+			log.Printf("[PayoutReconcileWorker] reconcile submitted payouts: %v", err)
+			return
 		}
-		payout.Status = entity.PayoutStatusSubmitted
-	case entity.PayoutStatusPaid:
-		if payout.Status == entity.PayoutStatusPaid {
-			return nil
+		if resolved > 0 {
+			log.Printf("[PayoutReconcileWorker] resolved %d payout(s)", resolved)
 		}
-		now := time.Now()
-		payout.Status = entity.PayoutStatusPaid
-		payout.PaidAt = &now
-	case entity.PayoutStatusFailed:
-		if payout.Status == entity.PayoutStatusPaid || payout.Status == entity.PayoutStatusFailed {
-			return nil
-		}
-		payout.Status = entity.PayoutStatusFailed
-	default:
-		return apperror.NewDomainError(apperror.ErrValidation, "INVALID_TRANSFER_STATUS", "unknown transfer status")
 	}
-	return release.Payouts.Update(ctx, payout)
+
+	run()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
 }
 
 func (uc *PayoutUsecase) releaseDeps() (*PayoutRelease, error) {
