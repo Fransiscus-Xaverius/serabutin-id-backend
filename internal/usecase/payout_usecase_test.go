@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -403,6 +405,7 @@ func (f *fakePayoutRepo) Create(ctx context.Context, p *entity.Payout) error {
 	}
 	f.nextID++
 	p.ID = f.nextID
+	p.UpdatedAt = time.Now()
 	copied := *p
 	f.rows[p.ID] = &copied
 	return nil
@@ -420,23 +423,71 @@ func (f *fakePayoutRepo) FindByPartnerReferenceNo(ctx context.Context, partnerRe
 	return f.find(func(p *entity.Payout) bool { return p.PartnerReferenceNo == partnerReferenceNo })
 }
 
-func (f *fakePayoutRepo) FindSubmitted(ctx context.Context, limit int) ([]*entity.Payout, error) {
-	var out []*entity.Payout
-	for id := uint(1); id <= f.nextID && len(out) < limit; id++ {
-		row, ok := f.rows[id]
-		if !ok || row.Status != entity.PayoutStatusSubmitted {
+// FindSubmitted mirrors the gorm query: unreconciled rows first, then the
+// least recently reconciled, then the oldest update.
+func (f *fakePayoutRepo) FindSubmitted(ctx context.Context, limit int, reconciledBefore time.Time) ([]*entity.Payout, error) {
+	var candidates []*entity.Payout
+	for _, row := range f.rows {
+		if row.Status != entity.PayoutStatusSubmitted {
+			continue
+		}
+		if row.LastReconciledAt != nil && !row.LastReconciledAt.Before(reconciledBefore) {
 			continue
 		}
 		copied := *row
-		out = append(out, &copied)
+		candidates = append(candidates, &copied)
 	}
-	return out, nil
+	sort.Slice(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		if (a.LastReconciledAt == nil) != (b.LastReconciledAt == nil) {
+			return a.LastReconciledAt == nil
+		}
+		if a.LastReconciledAt != nil && !a.LastReconciledAt.Equal(*b.LastReconciledAt) {
+			return a.LastReconciledAt.Before(*b.LastReconciledAt)
+		}
+		if !a.UpdatedAt.Equal(b.UpdatedAt) {
+			return a.UpdatedAt.Before(b.UpdatedAt)
+		}
+		return a.ID < b.ID
+	})
+	return capPayouts(candidates, limit), nil
+}
+
+// FindStalledInquiry mirrors the gorm query: inquiry rows not updated since
+// updatedBefore, oldest update first.
+func (f *fakePayoutRepo) FindStalledInquiry(ctx context.Context, limit int, updatedBefore time.Time) ([]*entity.Payout, error) {
+	var candidates []*entity.Payout
+	for _, row := range f.rows {
+		if row.Status != entity.PayoutStatusInquiry || !row.UpdatedAt.Before(updatedBefore) {
+			continue
+		}
+		copied := *row
+		candidates = append(candidates, &copied)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].UpdatedAt.Equal(candidates[j].UpdatedAt) {
+			return candidates[i].UpdatedAt.Before(candidates[j].UpdatedAt)
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	return capPayouts(candidates, limit), nil
+}
+
+func capPayouts(rows []*entity.Payout, limit int) []*entity.Payout {
+	if limit <= 0 {
+		return []*entity.Payout{}
+	}
+	if len(rows) > limit {
+		return rows[:limit]
+	}
+	return rows
 }
 
 func (f *fakePayoutRepo) Update(ctx context.Context, p *entity.Payout) error {
 	if _, ok := f.rows[p.ID]; !ok {
 		return apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")
 	}
+	p.UpdatedAt = time.Now()
 	copied := *p
 	f.rows[p.ID] = &copied
 	return nil
@@ -473,6 +524,11 @@ type fakeTransferGateway struct {
 	payments     []doku.TransferPaymentRequest
 	statuses     []string
 	balanceCalls int
+	// The X-EXTERNAL-ID each request kind was sent with, in call order.
+	inquiryIDs []string
+	paymentIDs []string
+	statusIDs  []string
+	balanceIDs []string
 
 	inquiryResult *doku.TransferInquiryResult
 	inquiryErr    error
@@ -490,6 +546,7 @@ type fakeTransferGateway struct {
 
 func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, externalID string, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
 	f.inquiries = append(f.inquiries, req)
+	f.inquiryIDs = append(f.inquiryIDs, externalID)
 	if f.inquiryErr != nil {
 		return nil, f.inquiryErr
 	}
@@ -501,6 +558,7 @@ func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, externalID st
 
 func (f *fakeTransferGateway) TransferPayment(ctx context.Context, externalID string, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error) {
 	f.payments = append(f.payments, req)
+	f.paymentIDs = append(f.paymentIDs, externalID)
 	if f.paymentErr != nil {
 		return nil, f.paymentErr
 	}
@@ -511,6 +569,7 @@ func (f *fakeTransferGateway) TransferPayment(ctx context.Context, externalID st
 }
 
 func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, externalID string, partnerReferenceNo string) (*doku.TransactionStatusResult, error) {
+	f.statusIDs = append(f.statusIDs, externalID)
 	f.statuses = append(f.statuses, partnerReferenceNo)
 	if err, ok := f.statusErrByRef[partnerReferenceNo]; ok {
 		return nil, err
@@ -528,6 +587,7 @@ func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, externalID 
 }
 
 func (f *fakeTransferGateway) BalanceInquiry(ctx context.Context, externalID string, profileID string) (*doku.BalanceResult, error) {
+	f.balanceIDs = append(f.balanceIDs, externalID)
 	f.balanceCalls++
 	if f.balanceErr != nil {
 		return nil, f.balanceErr
@@ -782,7 +842,7 @@ func TestPayoutUsecase_SyncTransferStatus_UnknownCodeIsRejectedAndChangesNothing
 	_, err := f.uc.SyncTransferStatus(context.Background(), "PO-42")
 
 	require.Error(t, err)
-	assert.Equal(t, before, *f.payouts.rows[payout.ID])
+	requireStateUnchangedButAttempted(t, before, *f.payouts.rows[payout.ID])
 }
 
 func TestPayoutUsecase_Release_PaysTheServiceAmountNotThePlatformFee(t *testing.T) {

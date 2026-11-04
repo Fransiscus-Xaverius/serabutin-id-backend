@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -160,17 +161,79 @@ func TestLivePayout_FindSubmittedReturnsOldestSubmittedOnly(t *testing.T) {
 		require.NoError(t, repo.Create(ctx, row))
 	}
 
-	submitted, err := repo.FindSubmitted(ctx, 2)
+	submitted, err := repo.FindSubmitted(ctx, 2, time.Now())
 	require.NoError(t, err)
 	require.Len(t, submitted, 2)
 	assert.Equal(t, "PO-60", submitted[0].PartnerReferenceNo, "oldest submitted payout comes first")
 	assert.Equal(t, "PO-62", submitted[1].PartnerReferenceNo)
 
-	all, err := repo.FindSubmitted(ctx, 10)
+	all, err := repo.FindSubmitted(ctx, 10, time.Now())
 	require.NoError(t, err)
 	assert.Len(t, all, 3, "pending and paid payouts are never returned")
 
-	none, err := repo.FindSubmitted(ctx, 0)
+	none, err := repo.FindSubmitted(ctx, 0, time.Now())
 	require.NoError(t, err)
 	assert.Empty(t, none)
+}
+
+func TestLivePayout_FindSubmittedSkipsRecentlyReconciled(t *testing.T) {
+	db := setupBountyLiveDB(t)
+	require.NoError(t, db.AutoMigrate(&model.PayoutModel{}))
+	ctx := context.Background()
+	repo := NewPayoutRepository(db)
+	now := time.Now()
+	recent := now.Add(-time.Minute)
+	old := now.Add(-10 * time.Minute)
+
+	recentRow := &entity.Payout{BookingID: 70, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: "PO-70", LastReconciledAt: &recent}
+	neverRow := &entity.Payout{BookingID: 71, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: "PO-71"}
+	oldRow := &entity.Payout{BookingID: 72, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: "PO-72", LastReconciledAt: &old}
+	for _, row := range []*entity.Payout{recentRow, neverRow, oldRow} {
+		require.NoError(t, repo.Create(ctx, row))
+	}
+
+	due, err := repo.FindSubmitted(ctx, 10, now.Add(-5*time.Minute))
+	require.NoError(t, err)
+	require.Len(t, due, 2)
+	assert.Equal(t, "PO-71", due[0].PartnerReferenceNo, "a never-reconciled payout comes first")
+	assert.Equal(t, "PO-72", due[1].PartnerReferenceNo)
+}
+
+func TestLivePayout_LastReconciledAtRoundTrips(t *testing.T) {
+	db := setupBountyLiveDB(t)
+	require.NoError(t, db.AutoMigrate(&model.PayoutModel{}))
+	ctx := context.Background()
+	repo := NewPayoutRepository(db)
+
+	payout := &entity.Payout{BookingID: 73, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: "PO-73"}
+	require.NoError(t, repo.Create(ctx, payout))
+	stamped := time.Now().UTC().Truncate(time.Microsecond)
+	payout.LastReconciledAt = &stamped
+	require.NoError(t, repo.Update(ctx, payout))
+
+	stored, err := repo.FindByID(ctx, payout.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.LastReconciledAt)
+	assert.True(t, stamped.Equal(stored.LastReconciledAt.UTC()))
+}
+
+func TestLivePayout_FindStalledInquiryByUpdatedAt(t *testing.T) {
+	db := setupBountyLiveDB(t)
+	require.NoError(t, db.AutoMigrate(&model.PayoutModel{}))
+	ctx := context.Background()
+	repo := NewPayoutRepository(db)
+
+	stale := &entity.Payout{BookingID: 80, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusInquiry, PartnerReferenceNo: "PO-80"}
+	fresh := &entity.Payout{BookingID: 81, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusInquiry, PartnerReferenceNo: "PO-81"}
+	submitted := &entity.Payout{BookingID: 82, ProviderID: 7, Amount: 1, Currency: "IDR", Channel: "BI_FAST", Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: "PO-82"}
+	for _, row := range []*entity.Payout{stale, fresh, submitted} {
+		require.NoError(t, repo.Create(ctx, row))
+	}
+	require.NoError(t, db.Model(&model.PayoutModel{}).Where("id = ?", stale.ID).UpdateColumn("updated_at", time.Now().Add(-10*time.Minute)).Error)
+	require.NoError(t, db.Model(&model.PayoutModel{}).Where("id = ?", submitted.ID).UpdateColumn("updated_at", time.Now().Add(-10*time.Minute)).Error)
+
+	stalled, err := repo.FindStalledInquiry(ctx, 10, time.Now().Add(-5*time.Minute))
+	require.NoError(t, err)
+	require.Len(t, stalled, 1, "only the inquiry that has sat for more than 5 minutes")
+	assert.Equal(t, "PO-80", stalled[0].PartnerReferenceNo)
 }

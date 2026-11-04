@@ -43,6 +43,9 @@ type Payout struct {
 	Replayed  bool
 	LastError string
 	PaidAt    *time.Time
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// LastReconciledAt is the last time the worker or the webhook asked DOKU
+	// for this payout's status. A recent attempt is not repeated.
+	LastReconciledAt *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }

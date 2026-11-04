@@ -99,7 +99,7 @@ func TestPayoutUsecase_SyncTransferStatus_StatusErrorChangesNothing(t *testing.T
 	_, err := f.uc.SyncTransferStatus(context.Background(), "PO-42")
 
 	require.Error(t, err)
-	assert.Equal(t, before, *f.payouts.rows[payout.ID])
+	requireStateUnchangedButAttempted(t, before, *f.payouts.rows[payout.ID])
 }
 
 func TestPayoutUsecase_SyncTransferStatus_UnknownDOKUCodeChangesNothing(t *testing.T) {
@@ -110,7 +110,7 @@ func TestPayoutUsecase_SyncTransferStatus_UnknownDOKUCodeChangesNothing(t *testi
 	_, err := f.uc.SyncTransferStatus(context.Background(), "PO-42")
 
 	require.Error(t, err)
-	assert.Equal(t, before, *f.payouts.rows[payout.ID])
+	requireStateUnchangedButAttempted(t, before, *f.payouts.rows[payout.ID])
 }
 
 func TestPayoutUsecase_SyncTransferStatus_UnknownReferenceIsNotFoundAndAsksNothing(t *testing.T) {

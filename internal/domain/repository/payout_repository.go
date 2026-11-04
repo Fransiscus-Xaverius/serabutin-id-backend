@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 )
@@ -15,8 +16,14 @@ type PayoutRepository interface {
 	FindByBookingID(ctx context.Context, bookingID uint) (*entity.Payout, error)
 	// FindByPartnerReferenceNo returns the payout that carries the key sent to DOKU.
 	FindByPartnerReferenceNo(ctx context.Context, partnerReferenceNo string) (*entity.Payout, error)
-	// FindSubmitted returns up to limit payouts still awaiting DOKU's outcome,
-	// oldest first, for reconciliation.
-	FindSubmitted(ctx context.Context, limit int) ([]*entity.Payout, error)
+	// FindSubmitted returns up to limit submitted payouts not reconciled since
+	// reconciledBefore, for reconciliation.
+	FindSubmitted(ctx context.Context, limit int, reconciledBefore time.Time) ([]*entity.Payout, error)
+	// FindStalledInquiry returns up to limit payouts in inquiry not updated
+	// since updatedBefore, for re-driving.
+	FindStalledInquiry(ctx context.Context, limit int, updatedBefore time.Time) ([]*entity.Payout, error)
+	// Update writes the mutable columns of a payout. It is deliberately
+	// exported: the only holder of this repository is PayoutUsecase, the one
+	// package allowed to change a payout's state. Nothing else may call it.
 	Update(ctx context.Context, payout *entity.Payout) error
 }

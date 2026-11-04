@@ -33,8 +33,10 @@ type PayoutModel struct {
 	Replayed  bool   `gorm:"not null;default:false"`
 	LastError string `gorm:"type:text"`
 	PaidAt    *time.Time
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// LastReconciledAt is indexed: the reconciliation queries filter on it.
+	LastReconciledAt *time.Time `gorm:"index"`
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 func (PayoutModel) TableName() string {

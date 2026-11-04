@@ -3,6 +3,7 @@ package gormrepo
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
@@ -46,17 +47,34 @@ func (r *PayoutRepository) FindByPartnerReferenceNo(ctx context.Context, partner
 	return r.findOne(ctx, "partner_reference_no = ?", partnerReferenceNo)
 }
 
-func (r *PayoutRepository) FindSubmitted(ctx context.Context, limit int) ([]*entity.Payout, error) {
+// FindSubmitted returns up to limit submitted payouts that were not reconciled
+// since reconciledBefore, never-reconciled rows first, so a payout DOKU keeps
+// answering about cannot starve the rest.
+func (r *PayoutRepository) FindSubmitted(ctx context.Context, limit int, reconciledBefore time.Time) ([]*entity.Payout, error) {
+	return r.findBatch(ctx, limit,
+		r.db.WithContext(ctx).
+			Where("status = ?", entity.PayoutStatusSubmitted).
+			Where("last_reconciled_at IS NULL OR last_reconciled_at < ?", reconciledBefore).
+			Order("last_reconciled_at ASC NULLS FIRST, updated_at ASC, id ASC"))
+}
+
+// FindStalledInquiry returns up to limit payouts stuck in inquiry since before
+// updatedBefore, oldest first. A payout moves to inquiry before any money is
+// sent, so these are the candidates for a re-drive.
+func (r *PayoutRepository) FindStalledInquiry(ctx context.Context, limit int, updatedBefore time.Time) ([]*entity.Payout, error) {
+	return r.findBatch(ctx, limit,
+		r.db.WithContext(ctx).
+			Where("status = ?", entity.PayoutStatusInquiry).
+			Where("updated_at < ?", updatedBefore).
+			Order("updated_at ASC, id ASC"))
+}
+
+func (r *PayoutRepository) findBatch(ctx context.Context, limit int, query *gorm.DB) ([]*entity.Payout, error) {
 	if limit <= 0 {
 		return []*entity.Payout{}, nil
 	}
 	var models []model.PayoutModel
-	err := r.db.WithContext(ctx).
-		Where("status = ?", entity.PayoutStatusSubmitted).
-		Order("updated_at ASC, id ASC").
-		Limit(limit).
-		Find(&models).Error
-	if err != nil {
+	if err := query.Limit(limit).Find(&models).Error; err != nil {
 		return nil, payoutDBError(err)
 	}
 	out := make([]*entity.Payout, 0, len(models))
@@ -119,6 +137,7 @@ func payoutUpdates(p *entity.Payout) map[string]interface{} {
 		"replayed":                                  p.Replayed,
 		"last_error":                                p.LastError,
 		"paid_at":                                   p.PaidAt,
+		"last_reconciled_at":                        p.LastReconciledAt,
 	}
 }
 
@@ -146,6 +165,7 @@ func toPayoutModel(p *entity.Payout) *model.PayoutModel {
 		Replayed:                              p.Replayed,
 		LastError:                             p.LastError,
 		PaidAt:                                p.PaidAt,
+		LastReconciledAt:                      p.LastReconciledAt,
 		CreatedAt:                             p.CreatedAt,
 		UpdatedAt:                             p.UpdatedAt,
 	}
@@ -175,6 +195,7 @@ func toPayoutEntity(m *model.PayoutModel) *entity.Payout {
 		Replayed:                              m.Replayed,
 		LastError:                             m.LastError,
 		PaidAt:                                m.PaidAt,
+		LastReconciledAt:                      m.LastReconciledAt,
 		CreatedAt:                             m.CreatedAt,
 		UpdatedAt:                             m.UpdatedAt,
 	}
