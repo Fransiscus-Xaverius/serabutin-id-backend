@@ -22,6 +22,7 @@ import (
 )
 
 const (
+	subAccountTestExternalID = "9001"
 	subAccountTestToken      = "tok-test-1"
 	subAccountTestTimestamp  = "2026-10-31T10:00:00+07:00"
 	subAccountTestRemoteRef  = "REF-900001"
@@ -104,7 +105,7 @@ func TestSubAccount_TransferInquirySendsSignedHeaders(t *testing.T) {
 	server, state := newSubAccountServer(t, okTransfer)
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	result, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 
 	require.NoError(t, err)
 	assert.Equal(t, subAccountTestRemoteRef, result.ReferenceNo)
@@ -141,7 +142,7 @@ func TestSubAccount_TransferPaymentCarriesTheInquiryReferences(t *testing.T) {
 	server, state := newSubAccountServer(t, okTransfer)
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.TransferPayment(context.Background(), TransferPaymentRequest{
+	result, err := client.TransferPayment(context.Background(), subAccountTestExternalID, TransferPaymentRequest{
 		TransferInquiryRequest: testInquiryRequest(),
 		ReferenceNo:            subAccountTestRemoteRef,
 		BeneficiaryAccountName: "Budi",
@@ -164,13 +165,13 @@ func TestSubAccount_SignatureChangesWithTheBody(t *testing.T) {
 	server, state := newSubAccountServer(t, okTransfer)
 	client := newTestSubAccountClient(server.URL)
 
-	_, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	_, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 	require.NoError(t, err)
 	firstSignature := state.lastHeader.Get("X-SIGNATURE")
 
 	changed := testInquiryRequest()
 	changed.Amount = 155001
-	_, err = client.TransferInquiry(context.Background(), changed)
+	_, err = client.TransferInquiry(context.Background(), subAccountTestExternalID, changed)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, firstSignature, state.lastHeader.Get("X-SIGNATURE"))
@@ -183,7 +184,7 @@ func TestSubAccount_Replays409WithAReferenceNo(t *testing.T) {
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	result, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 
 	require.NoError(t, err, "a 409 carrying a reference is a replay, not a failure")
 	assert.True(t, result.Replayed)
@@ -197,7 +198,7 @@ func TestSubAccount_Replays409OnPaymentWithAReferenceNo(t *testing.T) {
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.TransferPayment(context.Background(), TransferPaymentRequest{
+	result, err := client.TransferPayment(context.Background(), subAccountTestExternalID, TransferPaymentRequest{
 		TransferInquiryRequest: testInquiryRequest(),
 		ReferenceNo:            subAccountTestRemoteRef,
 		BeneficiaryAccountName: "Budi",
@@ -215,7 +216,7 @@ func TestSubAccount_Treats409WithoutAReferenceAsAnError(t *testing.T) {
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	result, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 
 	require.Error(t, err)
 	assert.Nil(t, result)
@@ -227,11 +228,11 @@ func TestSubAccount_FetchesTheTokenOnceAndReusesIt(t *testing.T) {
 	server, state := newSubAccountServer(t, okTransfer)
 	client := newTestSubAccountClient(server.URL)
 
-	_, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	_, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 	require.NoError(t, err)
-	_, err = client.TransferInquiry(context.Background(), testInquiryRequest())
+	_, err = client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 	require.NoError(t, err)
-	_, err = client.BalanceInquiry(context.Background(), "profile-1")
+	_, err = client.BalanceInquiry(context.Background(), subAccountTestExternalID, "profile-1")
 	require.NoError(t, err)
 
 	assert.Equal(t, int32(1), state.tokenCalls.Load())
@@ -243,16 +244,16 @@ func TestSubAccount_RefreshesTheTokenBeforeItExpires(t *testing.T) {
 	now := time.Date(2026, 10, 31, 3, 0, 0, 0, time.UTC)
 	client.now = func() time.Time { return now }
 
-	_, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	_, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 	require.NoError(t, err)
 
 	now = now.Add(time.Minute)
-	_, err = client.TransferInquiry(context.Background(), testInquiryRequest())
+	_, err = client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), state.tokenCalls.Load(), "a token is cached until 60s before its 360s valid_time")
 
 	now = now.Add(5 * time.Minute)
-	_, err = client.TransferInquiry(context.Background(), testInquiryRequest())
+	_, err = client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), state.tokenCalls.Load(), "a token past its refresh point is fetched again")
 }
@@ -272,7 +273,7 @@ func TestSubAccount_TokenRequestIsSignedWithTheNonSNAPScheme(t *testing.T) {
 	defer server.Close()
 	client := newTestSubAccountClient(server.URL)
 
-	_, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	_, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 	require.NoError(t, err)
 
 	assert.Equal(t, `{"grant_type":"client_credentials","valid_time":"360"}`, string(tokenBody))
@@ -291,7 +292,7 @@ func TestSubAccount_TransactionStatusSendsTheDocumentedRequestBody(t *testing.T)
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	_, err := client.TransactionStatus(context.Background(), "PR-1")
+	_, err := client.TransactionStatus(context.Background(), subAccountTestExternalID, "PR-1")
 
 	require.NoError(t, err)
 	assert.Equal(t, subAccountStatusPath, state.lastPath)
@@ -304,7 +305,7 @@ func TestSubAccount_TransactionStatusReadsTheDocumentedResponse(t *testing.T) {
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.TransactionStatus(context.Background(), "PR-1")
+	result, err := client.TransactionStatus(context.Background(), subAccountTestExternalID, "PR-1")
 
 	require.NoError(t, err)
 	assert.Equal(t, "PR-1", result.PartnerReferenceNo)
@@ -334,7 +335,7 @@ func TestSubAccount_TransactionStatusFailsClosedWithoutAMatchingReference(t *tes
 			})
 			client := newTestSubAccountClient(server.URL)
 
-			result, err := client.TransactionStatus(context.Background(), "PR-1")
+			result, err := client.TransactionStatus(context.Background(), subAccountTestExternalID, "PR-1")
 
 			require.Error(t, err)
 			assert.Nil(t, result)
@@ -350,7 +351,7 @@ func TestSubAccount_BalanceInquirySendsTheDocumentedRequestBody(t *testing.T) {
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	_, err := client.BalanceInquiry(context.Background(), "hub-profile-1")
+	_, err := client.BalanceInquiry(context.Background(), subAccountTestExternalID, "hub-profile-1")
 
 	require.NoError(t, err)
 	assert.Equal(t, subAccountBalancePath, state.lastPath)
@@ -366,7 +367,7 @@ func TestSubAccount_BalanceInquiryReadsTheDocumentedResponse(t *testing.T) {
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.BalanceInquiry(context.Background(), "hub-profile-1")
+	result, err := client.BalanceInquiry(context.Background(), subAccountTestExternalID, "hub-profile-1")
 
 	require.NoError(t, err)
 	assert.Equal(t, "Mitra Budi", result.Name)
@@ -389,7 +390,7 @@ func TestSubAccount_SettledAvailableIsTheIDRAccountNotThePendingOne(t *testing.T
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.BalanceInquiry(context.Background(), "hub-profile-1")
+	result, err := client.BalanceInquiry(context.Background(), subAccountTestExternalID, "hub-profile-1")
 	require.NoError(t, err)
 
 	available, ok := result.SettledAvailable()
@@ -411,7 +412,7 @@ func TestSubAccount_TransferInquiryReadsTheBeneficiaryNameFromTheDocumentedRespo
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	result, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 
 	require.NoError(t, err)
 	assert.Equal(t, "BUDI SANTOSO", result.BeneficiaryAccountName)
@@ -424,7 +425,7 @@ func TestSubAccount_TransferPaymentReadsTheDocumentedResponse(t *testing.T) {
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	result, err := client.TransferPayment(context.Background(), TransferPaymentRequest{
+	result, err := client.TransferPayment(context.Background(), subAccountTestExternalID, TransferPaymentRequest{
 		TransferInquiryRequest: testInquiryRequest(),
 		ReferenceNo:            subAccountTestRemoteRef,
 		BeneficiaryAccountName: "BUDI SANTOSO",
@@ -441,11 +442,11 @@ func TestSubAccount_TransferFailsClosedOnA2xxWithoutAReferenceNo(t *testing.T) {
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	inquiry, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	inquiry, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 	require.Error(t, err)
 	assert.Nil(t, inquiry)
 
-	payment, err := client.TransferPayment(context.Background(), TransferPaymentRequest{
+	payment, err := client.TransferPayment(context.Background(), subAccountTestExternalID, TransferPaymentRequest{
 		TransferInquiryRequest: testInquiryRequest(),
 		ReferenceNo:            subAccountTestRemoteRef,
 		BeneficiaryAccountName: "BUDI SANTOSO",
@@ -454,27 +455,112 @@ func TestSubAccount_TransferFailsClosedOnA2xxWithoutAReferenceNo(t *testing.T) {
 	assert.Nil(t, payment)
 }
 
-func TestSubAccount_ErrorBodiesNeverCarryTheTokenOrSecret(t *testing.T) {
+func TestSubAccount_ErrorsNeverCarryTheResponseBody(t *testing.T) {
+	const accountNumber = "1234567890"
 	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"echo":"Bearer ` + subAccountTestToken + ` secret ` + testSecret + `"}`))
+		_, _ = w.Write([]byte(`{"responseCode":"4002501","responseMessage":"Invalid account ` + accountNumber + ` for Bearer ` + subAccountTestToken + ` secret ` + testSecret + `"}`))
 	})
 	client := newTestSubAccountClient(server.URL)
 
-	_, err := client.TransactionStatus(context.Background(), "PR-1")
+	_, err := client.TransactionStatus(context.Background(), subAccountTestExternalID, "PR-1")
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "HTTP 400")
+	assert.Equal(t, "doku sub-account /sub-account/v2.0/transactions-status returned HTTP 400 (responseCode 4002501)", err.Error())
+	assert.NotContains(t, err.Error(), accountNumber)
 	assert.NotContains(t, err.Error(), testSecret)
 	assert.NotContains(t, err.Error(), subAccountTestToken)
-	assert.Contains(t, err.Error(), "[redacted]")
+}
+
+func TestSubAccount_ErrorsDropAResponseCodeThatIsNotAMachineCode(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"responseCode":"1234567 Budi Santoso"}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	_, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
+
+	require.Error(t, err)
+	assert.Equal(t, "doku sub-account /sub-account/v2.0/transfer-inquiry returned HTTP 500", err.Error())
+	assert.NotContains(t, err.Error(), "Budi")
+}
+
+func TestSubAccount_ParseErrorsDoNotEchoTheBody(t *testing.T) {
+	server, _ := newSubAccountServer(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`{"accountNumber": 1234567890`))
+	})
+	client := newTestSubAccountClient(server.URL)
+
+	_, err := client.TransactionStatus(context.Background(), subAccountTestExternalID, "PR-1")
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "1234567890")
 }
 
 func TestSubAccount_RequiresConfiguration(t *testing.T) {
 	client := NewSubAccountClient(Config{BaseURL: "https://api-sandbox.doku.com"})
 
-	_, err := client.TransferInquiry(context.Background(), testInquiryRequest())
+	_, err := client.TransferInquiry(context.Background(), subAccountTestExternalID, testInquiryRequest())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "DOKU_CLIENT_ID")
+}
+
+func TestSubAccount_ExternalIDIsTheCallerValueOnEveryCall(t *testing.T) {
+	server, state := newSubAccountServer(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`{"responseCode":"2000000","referenceNo":"R","partnerReferenceNo":"PR-1","latestTransactionStatus":"00","accounts":[]}`))
+	})
+	client := newTestSubAccountClient(server.URL)
+	clock := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+	client.now = func() time.Time { return clock }
+	const externalID = "424242"
+
+	calls := map[string]func() error{
+		"inquiry": func() error {
+			_, err := client.TransferInquiry(context.Background(), externalID, testInquiryRequest())
+			return err
+		},
+		"payment": func() error {
+			_, err := client.TransferPayment(context.Background(), externalID, TransferPaymentRequest{
+				TransferInquiryRequest: testInquiryRequest(),
+				ReferenceNo:            subAccountTestRemoteRef,
+				BeneficiaryAccountName: "BUDI",
+			})
+			return err
+		},
+		"status": func() error {
+			_, err := client.TransactionStatus(context.Background(), externalID, "PR-1")
+			return err
+		},
+		"balance": func() error {
+			_, err := client.BalanceInquiry(context.Background(), externalID, "hub-profile-1")
+			return err
+		},
+	}
+	for name, call := range calls {
+		clock = clock.Add(7 * time.Hour)
+		require.NoError(t, call(), name)
+		assert.Equal(t, externalID, state.lastHeader.Get("X-EXTERNAL-ID"), "%s must send the caller's external id", name)
+	}
+}
+
+func TestSubAccount_RefusesToCallDOKUWithoutANumericExternalID(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"referenceNo":"R"}`))
+	}))
+	defer server.Close()
+	client := newTestSubAccountClient(server.URL)
+
+	for _, externalID := range []string{"", "abc", "12a", " 42", "-7"} {
+		_, err := client.TransferInquiry(context.Background(), externalID, testInquiryRequest())
+		require.Error(t, err, "external id %q", externalID)
+		assert.Contains(t, err.Error(), "numeric external id")
+		_, err = client.TransactionStatus(context.Background(), externalID, "PR-1")
+		require.Error(t, err, "external id %q", externalID)
+	}
+
+	assert.Equal(t, int32(0), hits.Load(), "no request, not even the token, may reach DOKU without a numeric external id")
 }

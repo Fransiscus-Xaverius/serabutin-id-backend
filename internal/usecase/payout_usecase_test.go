@@ -488,7 +488,7 @@ type fakeTransferGateway struct {
 	balanceErr     error
 }
 
-func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
+func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, externalID string, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
 	f.inquiries = append(f.inquiries, req)
 	if f.inquiryErr != nil {
 		return nil, f.inquiryErr
@@ -499,7 +499,7 @@ func (f *fakeTransferGateway) TransferInquiry(ctx context.Context, req doku.Tran
 	return &doku.TransferInquiryResult{ReferenceNo: "INQ-1", PartnerReferenceNo: req.PartnerReferenceNo, BeneficiaryAccountName: "SITI RAHAYU"}, nil
 }
 
-func (f *fakeTransferGateway) TransferPayment(ctx context.Context, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error) {
+func (f *fakeTransferGateway) TransferPayment(ctx context.Context, externalID string, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error) {
 	f.payments = append(f.payments, req)
 	if f.paymentErr != nil {
 		return nil, f.paymentErr
@@ -510,7 +510,7 @@ func (f *fakeTransferGateway) TransferPayment(ctx context.Context, req doku.Tran
 	return &doku.TransferPaymentResult{ReferenceNo: "PAY-1", PartnerReferenceNo: req.PartnerReferenceNo}, nil
 }
 
-func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, partnerReferenceNo string) (*doku.TransactionStatusResult, error) {
+func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, externalID string, partnerReferenceNo string) (*doku.TransactionStatusResult, error) {
 	f.statuses = append(f.statuses, partnerReferenceNo)
 	if err, ok := f.statusErrByRef[partnerReferenceNo]; ok {
 		return nil, err
@@ -527,7 +527,7 @@ func (f *fakeTransferGateway) TransactionStatus(ctx context.Context, partnerRefe
 	return &doku.TransactionStatusResult{PartnerReferenceNo: partnerReferenceNo, LatestStatus: doku.TransactionStatusPending}, nil
 }
 
-func (f *fakeTransferGateway) BalanceInquiry(ctx context.Context, profileID string) (*doku.BalanceResult, error) {
+func (f *fakeTransferGateway) BalanceInquiry(ctx context.Context, externalID string, profileID string) (*doku.BalanceResult, error) {
 	f.balanceCalls++
 	if f.balanceErr != nil {
 		return nil, f.balanceErr

@@ -484,20 +484,20 @@ type syncFakeGateway struct {
 	statusQueries []string
 }
 
-func (g *syncFakeGateway) TransferInquiry(ctx context.Context, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
+func (g *syncFakeGateway) TransferInquiry(ctx context.Context, externalID string, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
 	return nil, errors.New("unexpected transfer inquiry during a status sync")
 }
 
-func (g *syncFakeGateway) TransferPayment(ctx context.Context, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error) {
+func (g *syncFakeGateway) TransferPayment(ctx context.Context, externalID string, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error) {
 	return nil, errors.New("unexpected transfer payment during a status sync")
 }
 
-func (g *syncFakeGateway) TransactionStatus(ctx context.Context, partnerReferenceNo string) (*doku.TransactionStatusResult, error) {
+func (g *syncFakeGateway) TransactionStatus(ctx context.Context, externalID string, partnerReferenceNo string) (*doku.TransactionStatusResult, error) {
 	g.statusQueries = append(g.statusQueries, partnerReferenceNo)
 	return g.statusResult, nil
 }
 
-func (g *syncFakeGateway) BalanceInquiry(ctx context.Context, profileID string) (*doku.BalanceResult, error) {
+func (g *syncFakeGateway) BalanceInquiry(ctx context.Context, externalID string, profileID string) (*doku.BalanceResult, error) {
 	return nil, errors.New("unexpected balance inquiry during a status sync")
 }
 

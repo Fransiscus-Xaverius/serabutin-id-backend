@@ -70,10 +70,10 @@ type PayoutPaymentLookup interface {
 
 // TransferGateway is the money-moving boundary of the payout usecase.
 type TransferGateway interface {
-	TransferInquiry(ctx context.Context, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error)
-	TransferPayment(ctx context.Context, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error)
-	TransactionStatus(ctx context.Context, partnerReferenceNo string) (*doku.TransactionStatusResult, error)
-	BalanceInquiry(ctx context.Context, profileID string) (*doku.BalanceResult, error)
+	TransferInquiry(ctx context.Context, externalID string, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error)
+	TransferPayment(ctx context.Context, externalID string, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error)
+	TransactionStatus(ctx context.Context, externalID string, partnerReferenceNo string) (*doku.TransactionStatusResult, error)
+	BalanceInquiry(ctx context.Context, externalID string, profileID string) (*doku.BalanceResult, error)
 }
 
 // PayoutRelease holds what only the money-moving path needs. It is attached
@@ -285,7 +285,7 @@ func (uc *PayoutUsecase) Release(ctx context.Context, bookingID uint) (*entity.P
 // state that answer describes. An error or an unknown code changes nothing:
 // the caller must not send a transfer on an unknown state.
 func (uc *PayoutUsecase) reconcile(ctx context.Context, release *PayoutRelease, payout *entity.Payout) error {
-	status, err := release.Gateway.TransactionStatus(ctx, payout.PartnerReferenceNo)
+	status, err := release.Gateway.TransactionStatus(ctx, payoutExternalID(payout), payout.PartnerReferenceNo)
 	if err != nil {
 		return err
 	}
@@ -332,8 +332,8 @@ func transferFailureReason(status *doku.TransactionStatusResult) string {
 // checkSettlement refuses a release unless the hub's settled balance covers
 // the amount. The held DOKU_MERCHANT_PENDING_IDR balance is not withdrawable,
 // so it never counts.
-func (uc *PayoutUsecase) checkSettlement(ctx context.Context, release *PayoutRelease, amount int64) error {
-	balance, err := release.Gateway.BalanceInquiry(ctx, release.ProfileID)
+func (uc *PayoutUsecase) checkSettlement(ctx context.Context, release *PayoutRelease, externalID string, amount int64) error {
+	balance, err := release.Gateway.BalanceInquiry(ctx, externalID, release.ProfileID)
 	if err != nil {
 		return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_SETTLEMENT_UNAVAILABLE", "cannot read the settled balance, the payout was not released")
 	}
@@ -513,6 +513,12 @@ func (uc *PayoutUsecase) createPayout(ctx context.Context, release *PayoutReleas
 	return payout, nil
 }
 
+// payoutExternalID is the X-EXTERNAL-ID for every DOKU call of a payout. It
+// comes from the persisted payout row, so a retry sends the same id.
+func payoutExternalID(payout *entity.Payout) string {
+	return strconv.FormatUint(uint64(payout.ID), 10)
+}
+
 // transfer runs the inquiry and then the payment, each under the payout's
 // stored partnerReferenceNo. A retry always starts again at the inquiry, which
 // DOKU answers as a replay with the original referenceNo.
@@ -529,11 +535,11 @@ func (uc *PayoutUsecase) transfer(ctx context.Context, release *PayoutRelease, p
 		BeneficiaryAccountNumber: number,
 		Remark:                   payoutRemark,
 	}
-	if err := uc.checkSettlement(ctx, release, payout.Amount); err != nil {
+	if err := uc.checkSettlement(ctx, release, payoutExternalID(payout), payout.Amount); err != nil {
 		return nil, err
 	}
 
-	inquiry, err := release.Gateway.TransferInquiry(ctx, inquiryReq)
+	inquiry, err := release.Gateway.TransferInquiry(ctx, payoutExternalID(payout), inquiryReq)
 	if err != nil {
 		return nil, uc.failTransfer(ctx, release, payout, "transfer inquiry")
 	}
@@ -555,7 +561,7 @@ func (uc *PayoutUsecase) transfer(ctx context.Context, release *PayoutRelease, p
 		return nil, err
 	}
 
-	paid, err := release.Gateway.TransferPayment(ctx, doku.TransferPaymentRequest{
+	paid, err := release.Gateway.TransferPayment(ctx, payoutExternalID(payout), doku.TransferPaymentRequest{
 		TransferInquiryRequest: inquiryReq,
 		ReferenceNo:            inquiry.ReferenceNo,
 		BeneficiaryAccountName: inquiry.BeneficiaryAccountName,

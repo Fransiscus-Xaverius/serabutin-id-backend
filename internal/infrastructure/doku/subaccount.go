@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,7 +34,11 @@ const (
 	subAccountChannel            = "BI_FAST"
 	subAccountCurrency           = "IDR"
 	subAccountMaxResponseBytes   = 1 << 20
-	subAccountMaxErrorBytes      = 500
+)
+
+var (
+	subAccountNumeric      = regexp.MustCompile(`^[0-9]+$`)
+	subAccountResponseCode = regexp.MustCompile(`^[0-9]{7}$`)
 )
 
 // Transaction status codes from transactions-status (latestTransactionStatus).
@@ -81,7 +86,7 @@ func NewSubAccountClient(cfg Config) *SubAccountClient {
 // TransferInquiry asks DOKU to validate a transfer and resolve the beneficiary
 // account name. The name must be shown to the user for confirmation before
 // TransferPayment. PartnerReferenceNo is the caller's idempotency key.
-func (c *SubAccountClient) TransferInquiry(ctx context.Context, req TransferInquiryRequest) (*TransferInquiryResult, error) {
+func (c *SubAccountClient) TransferInquiry(ctx context.Context, externalID string, req TransferInquiryRequest) (*TransferInquiryResult, error) {
 	if err := c.requireConfigured(); err != nil {
 		return nil, err
 	}
@@ -89,7 +94,7 @@ func (c *SubAccountClient) TransferInquiry(ctx context.Context, req TransferInqu
 		return nil, fmt.Errorf("doku transfer inquiry requires a partner reference no (the idempotency key)")
 	}
 
-	parsed, replayed, err := c.transfer(ctx, subAccountInquiryPath, req.body())
+	parsed, replayed, err := c.transfer(ctx, externalID, subAccountInquiryPath, req.body())
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +108,7 @@ func (c *SubAccountClient) TransferInquiry(ctx context.Context, req TransferInqu
 }
 
 // TransferPayment executes a transfer that TransferInquiry validated.
-func (c *SubAccountClient) TransferPayment(ctx context.Context, req TransferPaymentRequest) (*TransferPaymentResult, error) {
+func (c *SubAccountClient) TransferPayment(ctx context.Context, externalID string, req TransferPaymentRequest) (*TransferPaymentResult, error) {
 	if err := c.requireConfigured(); err != nil {
 		return nil, err
 	}
@@ -119,7 +124,7 @@ func (c *SubAccountClient) TransferPayment(ctx context.Context, req TransferPaym
 		ReferenceNo:            req.ReferenceNo,
 		BeneficiaryAccountName: req.BeneficiaryAccountName,
 	}
-	parsed, replayed, err := c.transfer(ctx, subAccountPaymentPath, body)
+	parsed, replayed, err := c.transfer(ctx, externalID, subAccountPaymentPath, body)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +140,7 @@ func (c *SubAccountClient) TransferPayment(ctx context.Context, req TransferPaym
 
 // TransactionStatus reads the latest status of a transfer by its partner
 // reference no. Compare LatestStatus against the TransactionStatus constants.
-func (c *SubAccountClient) TransactionStatus(ctx context.Context, partnerReferenceNo string) (*TransactionStatusResult, error) {
+func (c *SubAccountClient) TransactionStatus(ctx context.Context, externalID string, partnerReferenceNo string) (*TransactionStatusResult, error) {
 	if err := c.requireConfigured(); err != nil {
 		return nil, err
 	}
@@ -144,7 +149,7 @@ func (c *SubAccountClient) TransactionStatus(ctx context.Context, partnerReferen
 	}
 
 	var parsed transactionStatusResponse
-	err := c.postJSON(ctx, subAccountStatusPath, transactionStatusRequest{PartnerReferenceNo: partnerReferenceNo}, &parsed)
+	err := c.postJSON(ctx, externalID, subAccountStatusPath, transactionStatusRequest{PartnerReferenceNo: partnerReferenceNo}, &parsed)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +184,7 @@ func (c *SubAccountClient) TransactionStatus(ctx context.Context, partnerReferen
 
 // BalanceInquiry reads the balances of a hub profile. Gate a release on the
 // settled DOKU_MERCHANT_IDR available balance (see SettledAvailable).
-func (c *SubAccountClient) BalanceInquiry(ctx context.Context, profileID string) (*BalanceResult, error) {
+func (c *SubAccountClient) BalanceInquiry(ctx context.Context, externalID string, profileID string) (*BalanceResult, error) {
 	if err := c.requireConfigured(); err != nil {
 		return nil, err
 	}
@@ -188,7 +193,7 @@ func (c *SubAccountClient) BalanceInquiry(ctx context.Context, profileID string)
 	}
 
 	var parsed balanceResponse
-	err := c.postJSON(ctx, subAccountBalancePath, balanceRequest{ProfileID: profileID}, &parsed)
+	err := c.postJSON(ctx, externalID, subAccountBalancePath, balanceRequest{ProfileID: profileID}, &parsed)
 	if err != nil {
 		return nil, err
 	}
@@ -300,8 +305,8 @@ func (c *SubAccountClient) requireConfigured() error {
 // transfer posts a transfer call. A 409 that carries a reference is the
 // original transfer answering a repeated partnerReferenceNo, so it is a replay.
 // A 2xx without a referenceNo is an error: the transfer state is unknown.
-func (c *SubAccountClient) transfer(ctx context.Context, path string, payload any) (transferResponse, bool, error) {
-	status, raw, err := c.call(ctx, path, payload)
+func (c *SubAccountClient) transfer(ctx context.Context, externalID string, path string, payload any) (transferResponse, bool, error) {
+	status, raw, err := c.call(ctx, externalID, path, payload)
 	if err != nil {
 		return transferResponse{}, false, err
 	}
@@ -313,10 +318,10 @@ func (c *SubAccountClient) transfer(ctx context.Context, path string, payload an
 		}
 	}
 	if status < 200 || status >= 300 {
-		return transferResponse{}, false, fmt.Errorf("doku sub-account %s returned HTTP %d: %s", path, status, truncate(string(raw), subAccountMaxErrorBytes))
+		return transferResponse{}, false, dokuError(path, status, raw)
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return transferResponse{}, false, fmt.Errorf("parse doku sub-account %s response: %w", path, err)
+		return transferResponse{}, false, fmt.Errorf("parse doku sub-account %s response", path)
 	}
 	if parsed.ReferenceNo == "" {
 		return transferResponse{}, false, fmt.Errorf("doku sub-account %s response missing referenceNo", path)
@@ -325,23 +330,27 @@ func (c *SubAccountClient) transfer(ctx context.Context, path string, payload an
 	return parsed, false, nil
 }
 
-func (c *SubAccountClient) postJSON(ctx context.Context, path string, payload any, out any) error {
-	status, raw, err := c.call(ctx, path, payload)
+func (c *SubAccountClient) postJSON(ctx context.Context, externalID string, path string, payload any, out any) error {
+	status, raw, err := c.call(ctx, externalID, path, payload)
 	if err != nil {
 		return err
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("doku sub-account %s returned HTTP %d: %s", path, status, truncate(string(raw), subAccountMaxErrorBytes))
+		return dokuError(path, status, raw)
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("parse doku sub-account %s response: %w", path, err)
+		return fmt.Errorf("parse doku sub-account %s response", path)
 	}
 	return nil
 }
 
-// call sends one signed Sub-Account request. The returned body has the token
-// and the secret key removed, so no caller can echo credentials into an error.
-func (c *SubAccountClient) call(ctx context.Context, path string, payload any) (int, []byte, error) {
+// call sends one signed Sub-Account request. externalID is the X-EXTERNAL-ID
+// the caller owns (the payout row id); it is checked before any call to DOKU.
+func (c *SubAccountClient) call(ctx context.Context, externalID string, path string, payload any) (int, []byte, error) {
+	if !isNumeric(externalID) {
+		return 0, nil, fmt.Errorf("doku sub-account %s requires a numeric external id (the payout row id)", path)
+	}
+
 	token, err := c.accessToken(ctx)
 	if err != nil {
 		return 0, nil, err
@@ -361,7 +370,7 @@ func (c *SubAccountClient) call(ctx context.Context, path string, payload any) (
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("X-PARTNER-ID", c.cfg.ClientID)
-	httpReq.Header.Set("X-EXTERNAL-ID", c.externalID())
+	httpReq.Header.Set("X-EXTERNAL-ID", externalID)
 	httpReq.Header.Set("X-TIMESTAMP", timestamp)
 	httpReq.Header.Set("X-SIGNATURE", SignSHA512(c.cfg.SecretKey, http.MethodPost, path, token, string(body), timestamp))
 
@@ -375,7 +384,7 @@ func (c *SubAccountClient) call(ctx context.Context, path string, payload any) (
 	if err != nil {
 		return 0, nil, fmt.Errorf("read doku sub-account %s response: %w", path, err)
 	}
-	return resp.StatusCode, redact(raw, token, c.cfg.SecretKey), nil
+	return resp.StatusCode, raw, nil
 }
 
 // accessToken returns the cached B2B token, fetching a new one only when the
@@ -434,7 +443,7 @@ func (c *SubAccountClient) fetchToken(ctx context.Context) (string, error) {
 
 	var parsed tokenResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", fmt.Errorf("parse doku token response: %w", err)
+		return "", fmt.Errorf("parse doku token response")
 	}
 	if parsed.Token == "" {
 		return "", fmt.Errorf("doku token response missing token")
@@ -442,10 +451,21 @@ func (c *SubAccountClient) fetchToken(ctx context.Context) (string, error) {
 	return parsed.Token, nil
 }
 
-// externalID returns a numeric X-EXTERNAL-ID. DOKU requires it unique per day,
-// and the nanosecond clock is unique across the calls this client makes.
-func (c *SubAccountClient) externalID() string {
-	return strconv.FormatInt(c.now().UnixNano(), 10)
+// dokuError describes a non-2xx answer. The response body is never included:
+// it can echo the beneficiary account number. DOKU's responseCode is a machine
+// code, so it is kept only when it has the documented seven-digit shape.
+func dokuError(path string, status int, raw []byte) error {
+	var parsed struct {
+		ResponseCode string `json:"responseCode"`
+	}
+	if json.Unmarshal(raw, &parsed) == nil && subAccountResponseCode.MatchString(parsed.ResponseCode) {
+		return fmt.Errorf("doku sub-account %s returned HTTP %d (responseCode %s)", path, status, parsed.ResponseCode)
+	}
+	return fmt.Errorf("doku sub-account %s returned HTTP %d", path, status)
+}
+
+func isNumeric(value string) bool {
+	return subAccountNumeric.MatchString(value)
 }
 
 // SignSHA512 returns base64(HMAC-SHA512(secret, stringToSign)) where
@@ -559,19 +579,6 @@ type balanceAccount struct {
 type balanceAmounts struct {
 	Available string `json:"available"`
 	Reserved  string `json:"reserved"`
-}
-
-// redact removes the token and the secret key from a response body, so a
-// DOKU error that echoes either one cannot leak it into our errors or logs.
-func redact(raw []byte, secrets ...string) []byte {
-	out := raw
-	for _, secret := range secrets {
-		if secret == "" {
-			continue
-		}
-		out = bytes.ReplaceAll(out, []byte(secret), []byte("[redacted]"))
-	}
-	return out
 }
 
 func firstNonEmpty(values ...string) string {
