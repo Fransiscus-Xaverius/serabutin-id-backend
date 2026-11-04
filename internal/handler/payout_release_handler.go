@@ -26,7 +26,7 @@ const transferWebhookPath = "/api/v1/payments/doku/transfer-webhook"
 // payoutReleaser is the part of the payout usecase the release handler needs.
 type payoutReleaser interface {
 	Release(ctx context.Context, bookingID uint) (*entity.Payout, error)
-	ApplyTransferStatus(ctx context.Context, partnerReferenceNo, status string) error
+	SyncTransferStatus(ctx context.Context, partnerReferenceNo string) (*entity.Payout, error)
 }
 
 // PayoutReleaseHandler serves the admin payout release and DOKU's transfer
@@ -63,31 +63,36 @@ func (h *PayoutReleaseHandler) Release(c fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, toPayoutReleaseResponse(payout))
 }
 
+// transferNotification reads only the partner reference, the key that routes
+// the notification to a payout. Nothing else in the body is trusted.
 type transferNotification struct {
-	PartnerReferenceNo      string `json:"partnerReferenceNo"`
-	LatestTransactionStatus string `json:"latestTransactionStatus"`
+	PartnerReferenceNo string `json:"partnerReferenceNo"`
 }
 
-// TransferWebhook receives DOKU's transfer notification. It records the outcome
-// of a transfer DOKU already made and never moves money. It is public because
-// DOKU calls it server to server; the Sub-Account signature makes it trusted.
+// TransferWebhook receives DOKU's transfer notification. It is advisory: it
+// names a payout, and the outcome comes from DOKU's transactions-status API,
+// never from the body. It never moves money.
+//
+// ASSUMPTION, NOT DOCUMENTED BY DOKU: the notification's JSON fields and the
+// header names read below (Authorization bearer token, X-SIGNATURE or
+// Signature, X-TIMESTAMP or Request-Timestamp) are not in DOKU's public
+// Sub-Account V2 docs. They must be confirmed against a real sandbox
+// notification before go-live. The signature scheme itself is documented.
 func (h *PayoutReleaseHandler) TransferWebhook(c fiber.Ctx) error {
 	raw := c.Body()
 	token, ok := bearerToken(c.Get("Authorization"))
-	if !ok || !verifyTransferSignature(h.secretKey, token, c.Get("X-TIMESTAMP"), c.Get("X-SIGNATURE"), raw) {
+	signature := firstHeader(c, "X-SIGNATURE", "Signature")
+	timestamp := firstHeader(c, "X-TIMESTAMP", "Request-Timestamp")
+	if !ok || !verifyTransferSignature(h.secretKey, token, timestamp, signature, raw) {
 		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusUnauthorized, "INVALID_SIGNATURE", "invalid notification signature"))
 	}
 
 	var notification transferNotification
 	if err := json.Unmarshal(raw, &notification); err != nil || notification.PartnerReferenceNo == "" {
-		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_NOTIFICATION", "invalid transfer notification"))
-	}
-	status, ok := payoutStatusFromDoku(notification.LatestTransactionStatus)
-	if !ok {
-		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_TRANSACTION_STATUS", "unknown transfer status"))
+		return apierror.GlobalErrorHandler(c, apierror.NewAPIError(fiber.StatusBadRequest, "INVALID_NOTIFICATION", "notification has no readable partner reference, nothing was changed"))
 	}
 
-	if err := h.payouts.ApplyTransferStatus(c.Context(), notification.PartnerReferenceNo, status); err != nil {
+	if _, err := h.payouts.SyncTransferStatus(c.Context(), notification.PartnerReferenceNo); err != nil {
 		if errors.Is(err, apperror.ErrNotFound) {
 			// DOKU retries notifications it could not confirm. A transfer we
 			// do not know about is acknowledged so the retry storm stops.
@@ -99,20 +104,6 @@ func (h *PayoutReleaseHandler) TransferWebhook(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "SUCCESS"})
 }
 
-// payoutStatusFromDoku maps a transactions-status code to the payout status it
-// records. A code outside the documented set is rejected, not guessed at.
-func payoutStatusFromDoku(code string) (string, bool) {
-	switch code {
-	case doku.TransactionStatusSuccess:
-		return entity.PayoutStatusPaid, true
-	case doku.TransactionStatusPending:
-		return entity.PayoutStatusSubmitted, true
-	case doku.TransactionStatusFailed, doku.TransactionStatusCanceled, doku.TransactionStatusRefunded:
-		return entity.PayoutStatusFailed, true
-	}
-	return "", false
-}
-
 // verifyTransferSignature checks the Sub-Account signature over the
 // notification path and the raw body. An empty secret or any missing part
 // fails closed.
@@ -122,6 +113,16 @@ func verifyTransferSignature(secretKey, token, timestamp, signature string, body
 	}
 	expected := doku.SignSHA512(secretKey, http.MethodPost, transferWebhookPath, token, string(body), timestamp)
 	return subtle.ConstantTimeCompare([]byte(signature), []byte(expected)) == 1
+}
+
+// firstHeader returns the value of the first named header that is set.
+func firstHeader(c fiber.Ctx, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(c.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func bearerToken(header string) (string, bool) {

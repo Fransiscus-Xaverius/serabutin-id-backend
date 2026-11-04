@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/doku"
 	"github.com/serabutin/serabutin-id-backend/internal/middleware"
+	"github.com/serabutin/serabutin-id-backend/internal/usecase"
 	"github.com/serabutin/serabutin-id-backend/pkg/requestctx"
 )
 
@@ -23,6 +25,7 @@ const (
 	releaseTestSecret    = "doku-secret-key-for-tests"
 	releaseTestToken     = "b2b-token-for-tests"
 	releaseTestTimestamp = "2026-10-31T10:00:00+07:00"
+	releaseTestRef       = "payout-booking-42"
 	transferBodyPaid     = `{"partnerReferenceNo":"payout-booking-42","latestTransactionStatus":"00"}`
 )
 
@@ -123,7 +126,7 @@ func TestPayoutReleaseHandler_InvalidBookingIDIs400(t *testing.T) {
 	assert.Equal(t, 0, uc.releaseCalls)
 }
 
-func TestPayoutReleaseHandler_TransferWebhookWithValidSignatureRecordsStatus(t *testing.T) {
+func TestPayoutReleaseHandler_TransferWebhookWithValidSignatureSyncsThePayout(t *testing.T) {
 	uc := &fakePayoutReleaser{}
 	app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
 
@@ -133,11 +136,29 @@ func TestPayoutReleaseHandler_TransferWebhookWithValidSignatureRecordsStatus(t *
 
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Contains(t, string(raw), "SUCCESS")
-	assert.Equal(t, []string{"payout-booking-42:paid"}, uc.appliedStatuses)
+	assert.Equal(t, []string{releaseTestRef}, uc.syncedRefs)
 	assert.Equal(t, 0, uc.releaseCalls, "a webhook must never move money")
 }
 
-func TestPayoutReleaseHandler_RepeatedTransferWebhookIsForwardedWithoutChange(t *testing.T) {
+func TestPayoutReleaseHandler_TransferWebhookPassesOnlyTheReferenceNotTheBodyStatus(t *testing.T) {
+	// The body claims success or failure; the handler must ignore that claim
+	// and hand the usecase only the partner reference.
+	for _, code := range []string{"00", "06", "99"} {
+		t.Run(code, func(t *testing.T) {
+			body := `{"partnerReferenceNo":"payout-booking-42","latestTransactionStatus":"` + code + `"}`
+			uc := &fakePayoutReleaser{}
+			app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
+
+			resp := postTransferWebhook(t, app, body, transferSignature(releaseTestSecret, transferWebhookPath, body))
+			defer resp.Body.Close()
+
+			assert.Equal(t, 200, resp.StatusCode)
+			assert.Equal(t, []string{releaseTestRef}, uc.syncedRefs)
+		})
+	}
+}
+
+func TestPayoutReleaseHandler_TransferWebhookRepeatedNotificationSyncsAgain(t *testing.T) {
 	uc := &fakePayoutReleaser{}
 	app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
 	signature := transferSignature(releaseTestSecret, transferWebhookPath, transferBodyPaid)
@@ -149,30 +170,7 @@ func TestPayoutReleaseHandler_RepeatedTransferWebhookIsForwardedWithoutChange(t 
 
 	assert.Equal(t, 200, first.StatusCode)
 	assert.Equal(t, 200, second.StatusCode)
-	assert.Equal(t, []string{"payout-booking-42:paid", "payout-booking-42:paid"}, uc.appliedStatuses)
-}
-
-func TestPayoutReleaseHandler_TransferWebhookStatusMapping(t *testing.T) {
-	cases := map[string]string{
-		"00": "paid",
-		"03": "submitted",
-		"06": "failed",
-		"05": "failed",
-		"04": "failed",
-	}
-	for code, want := range cases {
-		t.Run(code, func(t *testing.T) {
-			body := `{"partnerReferenceNo":"payout-booking-42","latestTransactionStatus":"` + code + `"}`
-			uc := &fakePayoutReleaser{}
-			app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
-
-			resp := postTransferWebhook(t, app, body, transferSignature(releaseTestSecret, transferWebhookPath, body))
-			defer resp.Body.Close()
-
-			assert.Equal(t, 200, resp.StatusCode)
-			assert.Equal(t, []string{"payout-booking-42:" + want}, uc.appliedStatuses)
-		})
-	}
+	assert.Equal(t, []string{releaseTestRef, releaseTestRef}, uc.syncedRefs)
 }
 
 func TestPayoutReleaseHandler_TransferWebhookRejectsBadSignature(t *testing.T) {
@@ -198,7 +196,7 @@ func TestPayoutReleaseHandler_TransferWebhookRejectsBadSignature(t *testing.T) {
 
 			assert.Equal(t, 401, resp.StatusCode)
 			assert.Equal(t, "INVALID_SIGNATURE", errorCode(t, resp))
-			assert.Empty(t, uc.appliedStatuses, "an unverifiable notification must change nothing")
+			assert.Empty(t, uc.syncedRefs, "an unverifiable notification must change nothing")
 		})
 	}
 }
@@ -211,7 +209,7 @@ func TestPayoutReleaseHandler_TransferWebhookFailsClosedWithoutSecret(t *testing
 	defer resp.Body.Close()
 
 	assert.Equal(t, 401, resp.StatusCode)
-	assert.Empty(t, uc.appliedStatuses)
+	assert.Empty(t, uc.syncedRefs)
 }
 
 func TestPayoutReleaseHandler_TransferWebhookWithoutBearerTokenIs401(t *testing.T) {
@@ -222,7 +220,24 @@ func TestPayoutReleaseHandler_TransferWebhookWithoutBearerTokenIs401(t *testing.
 	defer resp.Body.Close()
 
 	assert.Equal(t, 401, resp.StatusCode)
-	assert.Empty(t, uc.appliedStatuses)
+	assert.Empty(t, uc.syncedRefs)
+}
+
+func TestPayoutReleaseHandler_TransferWebhookAcceptsTheAlternateHeaderNames(t *testing.T) {
+	uc := &fakePayoutReleaser{}
+	app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
+
+	req := httptest.NewRequest("POST", "/api/v1/payments/doku/transfer-webhook", strings.NewReader(transferBodyPaid))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+releaseTestToken)
+	req.Header.Set("Signature", transferSignature(releaseTestSecret, transferWebhookPath, transferBodyPaid))
+	req.Header.Set("Request-Timestamp", releaseTestTimestamp)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, []string{releaseTestRef}, uc.syncedRefs)
 }
 
 func TestPayoutReleaseHandler_TransferWebhookErrorsNeverEchoCredentials(t *testing.T) {
@@ -237,33 +252,29 @@ func TestPayoutReleaseHandler_TransferWebhookErrorsNeverEchoCredentials(t *testi
 	assert.NotContains(t, string(raw), releaseTestToken)
 }
 
-func TestPayoutReleaseHandler_TransferWebhookUnknownStatusIs400(t *testing.T) {
-	body := `{"partnerReferenceNo":"payout-booking-42","latestTransactionStatus":"99"}`
-	uc := &fakePayoutReleaser{}
-	app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
+func TestPayoutReleaseHandler_TransferWebhookUnreadableBodyChangesNothing(t *testing.T) {
+	cases := map[string]string{
+		"not json":             `{"partnerReferenceNo":`,
+		"no partner reference": `{"latestTransactionStatus":"00"}`,
+		"empty body":           ``,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			uc := &fakePayoutReleaser{}
+			app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
 
-	resp := postTransferWebhook(t, app, body, transferSignature(releaseTestSecret, transferWebhookPath, body))
-	defer resp.Body.Close()
+			resp := postTransferWebhook(t, app, body, transferSignature(releaseTestSecret, transferWebhookPath, body))
+			defer resp.Body.Close()
 
-	assert.Equal(t, 400, resp.StatusCode)
-	assert.Equal(t, "INVALID_TRANSACTION_STATUS", errorCode(t, resp))
-	assert.Empty(t, uc.appliedStatuses)
-}
-
-func TestPayoutReleaseHandler_TransferWebhookMissingReferenceIs400(t *testing.T) {
-	body := `{"latestTransactionStatus":"00"}`
-	uc := &fakePayoutReleaser{}
-	app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
-
-	resp := postTransferWebhook(t, app, body, transferSignature(releaseTestSecret, transferWebhookPath, body))
-	defer resp.Body.Close()
-
-	assert.Equal(t, 400, resp.StatusCode)
-	assert.Equal(t, "INVALID_NOTIFICATION", errorCode(t, resp))
+			assert.Equal(t, 400, resp.StatusCode)
+			assert.Equal(t, "INVALID_NOTIFICATION", errorCode(t, resp))
+			assert.Empty(t, uc.syncedRefs, "a body that cannot be read must never reach the usecase")
+		})
+	}
 }
 
 func TestPayoutReleaseHandler_TransferWebhookUnknownTransferIsAcknowledged(t *testing.T) {
-	uc := &fakePayoutReleaser{applyErr: apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")}
+	uc := &fakePayoutReleaser{syncErr: apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")}
 	app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
 
 	resp := postTransferWebhook(t, app, transferBodyPaid, transferSignature(releaseTestSecret, transferWebhookPath, transferBodyPaid))
@@ -272,6 +283,71 @@ func TestPayoutReleaseHandler_TransferWebhookUnknownTransferIsAcknowledged(t *te
 
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Contains(t, string(raw), "IGNORED")
+}
+
+func TestPayoutReleaseHandler_TransferWebhookStatusApiFailureIsRetryable(t *testing.T) {
+	uc := &fakePayoutReleaser{syncErr: errors.New("doku sub-account transactions-status returned HTTP 503")}
+	app := newReleaseTestApp(uc, &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
+
+	resp := postTransferWebhook(t, app, transferBodyPaid, transferSignature(releaseTestSecret, transferWebhookPath, transferBodyPaid))
+	defer resp.Body.Close()
+
+	assert.Equal(t, 500, resp.StatusCode, "a failed status check must be retried by DOKU, not acknowledged")
+	assert.Equal(t, "INTERNAL_ERROR", errorCode(t, resp))
+}
+
+// The next two tests use the real usecase over an in-memory payout store and a
+// fake DOKU gateway. The notification body claims one outcome and DOKU's
+// transactions-status API reports the other; the payout must follow the API.
+
+func TestPayoutReleaseHandler_BodyClaimsSuccessButStatusApiSaysFailed(t *testing.T) {
+	store, gateway := newSyncFixture(&doku.TransactionStatusResult{LatestStatus: doku.TransactionStatusFailed})
+	app := newReleaseTestApp(usecaseSyncer(store, gateway), &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
+
+	resp := postTransferWebhook(t, app, transferBodyPaid, transferSignature(releaseTestSecret, transferWebhookPath, transferBodyPaid))
+	defer resp.Body.Close()
+
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, []string{releaseTestRef}, gateway.statusQueries)
+	stored := store.rows[1]
+	assert.Equal(t, entity.PayoutStatusFailed, stored.Status)
+	assert.Nil(t, stored.PaidAt)
+}
+
+func TestPayoutReleaseHandler_BodyClaimsFailureButStatusApiSaysPaid(t *testing.T) {
+	store, gateway := newSyncFixture(&doku.TransactionStatusResult{LatestStatus: doku.TransactionStatusSuccess})
+	failedBody := `{"partnerReferenceNo":"payout-booking-42","latestTransactionStatus":"06"}`
+	app := newReleaseTestApp(usecaseSyncer(store, gateway), &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
+
+	resp := postTransferWebhook(t, app, failedBody, transferSignature(releaseTestSecret, transferWebhookPath, failedBody))
+	defer resp.Body.Close()
+
+	assert.Equal(t, 200, resp.StatusCode)
+	stored := store.rows[1]
+	assert.Equal(t, entity.PayoutStatusPaid, stored.Status)
+	assert.NotNil(t, stored.PaidAt)
+}
+
+func TestPayoutReleaseHandler_RepeatedNotificationNeverChangesAPaidPayout(t *testing.T) {
+	store, gateway := newSyncFixture(&doku.TransactionStatusResult{LatestStatus: doku.TransactionStatusSuccess})
+	app := newReleaseTestApp(usecaseSyncer(store, gateway), &fakeProfileUsecase{role: "customer"}, 0, releaseTestSecret, nil)
+	signature := transferSignature(releaseTestSecret, transferWebhookPath, transferBodyPaid)
+
+	first := postTransferWebhook(t, app, transferBodyPaid, signature)
+	defer first.Body.Close()
+	paidAt := store.rows[1].PaidAt
+	require.NotNil(t, paidAt)
+
+	// DOKU now answers failed for the same reference. A paid payout must not
+	// move, and the status API must not even be asked again.
+	gateway.statusResult = &doku.TransactionStatusResult{LatestStatus: doku.TransactionStatusFailed}
+	second := postTransferWebhook(t, app, transferBodyPaid, signature)
+	defer second.Body.Close()
+
+	assert.Equal(t, 200, second.StatusCode)
+	assert.Equal(t, entity.PayoutStatusPaid, store.rows[1].Status)
+	assert.Equal(t, paidAt, store.rows[1].PaidAt)
+	assert.Len(t, gateway.statusQueries, 1)
 }
 
 // transferSignature signs a notification exactly as DOKU does: the Sub-Account
@@ -310,7 +386,7 @@ func postRelease(t *testing.T, app *fiber.App, path string) *http.Response {
 	return resp
 }
 
-func newReleaseTestApp(uc *fakePayoutReleaser, profiles *fakeProfileUsecase, userID uint, secret string, releaseErr error) *fiber.App {
+func newReleaseTestApp(uc payoutReleaser, profiles *fakeProfileUsecase, userID uint, secret string, releaseErr error) *fiber.App {
 	h := NewPayoutReleaseHandler(uc, secret, releaseErr)
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
@@ -325,10 +401,10 @@ func newReleaseTestApp(uc *fakePayoutReleaser, profiles *fakeProfileUsecase, use
 type fakePayoutReleaser struct {
 	release           *entity.Payout
 	releaseErr        error
-	applyErr          error
+	syncErr           error
 	releaseCalls      int
 	releasedBookingID uint
-	appliedStatuses   []string
+	syncedRefs        []string
 }
 
 func (f *fakePayoutReleaser) Release(ctx context.Context, bookingID uint) (*entity.Payout, error) {
@@ -343,7 +419,89 @@ func (f *fakePayoutReleaser) Release(ctx context.Context, bookingID uint) (*enti
 	return f.release, nil
 }
 
-func (f *fakePayoutReleaser) ApplyTransferStatus(ctx context.Context, partnerReferenceNo, status string) error {
-	f.appliedStatuses = append(f.appliedStatuses, partnerReferenceNo+":"+status)
-	return f.applyErr
+func (f *fakePayoutReleaser) SyncTransferStatus(ctx context.Context, partnerReferenceNo string) (*entity.Payout, error) {
+	f.syncedRefs = append(f.syncedRefs, partnerReferenceNo)
+	if f.syncErr != nil {
+		return nil, f.syncErr
+	}
+	return &entity.Payout{PartnerReferenceNo: partnerReferenceNo}, nil
+}
+
+// syncFakeStore is an in-memory payout repository holding one submitted payout
+// (ID 1) under releaseTestRef.
+type syncFakeStore struct {
+	rows map[uint]*entity.Payout
+}
+
+func (s *syncFakeStore) Create(ctx context.Context, p *entity.Payout) error {
+	s.rows[p.ID] = p
+	return nil
+}
+
+func (s *syncFakeStore) FindByID(ctx context.Context, id uint) (*entity.Payout, error) {
+	return s.find(func(p *entity.Payout) bool { return p.ID == id })
+}
+
+func (s *syncFakeStore) FindByBookingID(ctx context.Context, bookingID uint) (*entity.Payout, error) {
+	return s.find(func(p *entity.Payout) bool { return p.BookingID == bookingID })
+}
+
+func (s *syncFakeStore) FindByPartnerReferenceNo(ctx context.Context, ref string) (*entity.Payout, error) {
+	return s.find(func(p *entity.Payout) bool { return p.PartnerReferenceNo == ref })
+}
+
+func (s *syncFakeStore) Update(ctx context.Context, p *entity.Payout) error {
+	copied := *p
+	s.rows[p.ID] = &copied
+	return nil
+}
+
+func (s *syncFakeStore) find(match func(*entity.Payout) bool) (*entity.Payout, error) {
+	for _, row := range s.rows {
+		if match(row) {
+			copied := *row
+			return &copied, nil
+		}
+	}
+	return nil, apperror.NewDomainError(apperror.ErrNotFound, "PAYOUT_NOT_FOUND", "payout not found")
+}
+
+// syncFakeGateway answers only transactions-status; the other DOKU calls are
+// never reached by a sync and fail loudly if they are.
+type syncFakeGateway struct {
+	statusResult  *doku.TransactionStatusResult
+	statusQueries []string
+}
+
+func (g *syncFakeGateway) TransferInquiry(ctx context.Context, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error) {
+	return nil, errors.New("unexpected transfer inquiry during a status sync")
+}
+
+func (g *syncFakeGateway) TransferPayment(ctx context.Context, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error) {
+	return nil, errors.New("unexpected transfer payment during a status sync")
+}
+
+func (g *syncFakeGateway) TransactionStatus(ctx context.Context, partnerReferenceNo string) (*doku.TransactionStatusResult, error) {
+	g.statusQueries = append(g.statusQueries, partnerReferenceNo)
+	return g.statusResult, nil
+}
+
+func (g *syncFakeGateway) BalanceInquiry(ctx context.Context, profileID string) (*doku.BalanceResult, error) {
+	return nil, errors.New("unexpected balance inquiry during a status sync")
+}
+
+func newSyncFixture(status *doku.TransactionStatusResult) (*syncFakeStore, *syncFakeGateway) {
+	store := &syncFakeStore{rows: map[uint]*entity.Payout{
+		1: {ID: 1, BookingID: 42, ProviderID: 7, Amount: 150000, Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: releaseTestRef},
+	}}
+	return store, &syncFakeGateway{statusResult: status}
+}
+
+// usecaseSyncer wires the real payout usecase over the fakes. Only the release
+// dependencies the sync path touches are set.
+func usecaseSyncer(store *syncFakeStore, gateway *syncFakeGateway) payoutReleaser {
+	return usecase.NewPayoutUsecase(nil, nil, nil, "").WithRelease(usecase.PayoutRelease{
+		Payouts: store,
+		Gateway: gateway,
+	})
 }

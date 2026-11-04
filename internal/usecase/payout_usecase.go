@@ -365,9 +365,35 @@ func settledCents(value string) (int64, bool) {
 	return cents, err == nil
 }
 
+// SyncTransferStatus records the outcome of a payout's transfer as DOKU's
+// transactions-status API reports it. The caller supplies only the partner
+// reference: the outcome is never taken from a notification body. A paid
+// payout returns unchanged without asking DOKU. An error changes nothing.
+func (uc *PayoutUsecase) SyncTransferStatus(ctx context.Context, partnerReferenceNo string) (*entity.Payout, error) {
+	release, err := uc.releaseDeps()
+	if err != nil {
+		return nil, err
+	}
+	payout, err := release.Payouts.FindByPartnerReferenceNo(ctx, partnerReferenceNo)
+	if err != nil {
+		return nil, err
+	}
+	if payout.Status == entity.PayoutStatusPaid {
+		return payout, nil
+	}
+	if err := uc.reconcile(ctx, release, payout); err != nil {
+		return nil, err
+	}
+	if err := release.Payouts.Update(ctx, payout); err != nil {
+		return nil, err
+	}
+	return payout, nil
+}
+
 // ApplyTransferStatus moves a payout to the status DOKU reports for its
 // partnerReferenceNo. Repeating a status is a no-op, and a paid payout is
-// never changed again.
+// never changed again. The payout webhook does not use it: its outcome comes
+// from SyncTransferStatus.
 func (uc *PayoutUsecase) ApplyTransferStatus(ctx context.Context, partnerReferenceNo, status string) error {
 	release, err := uc.releaseDeps()
 	if err != nil {
