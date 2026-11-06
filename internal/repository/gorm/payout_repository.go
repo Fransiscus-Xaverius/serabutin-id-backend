@@ -3,6 +3,8 @@ package gormrepo
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
@@ -12,12 +14,33 @@ import (
 	"gorm.io/gorm"
 )
 
+const payoutReadExternalIDSequence = "payout_external_id_seq"
+
 type PayoutRepository struct {
 	db *gorm.DB
 }
 
 func NewPayoutRepository(db *gorm.DB) *PayoutRepository {
 	return &PayoutRepository{db: db}
+}
+
+// EnsurePayoutExternalIDSequence creates the sequence that the read-only DOKU
+// calls draw their X-EXTERNAL-ID from. It starts above the money-moving band,
+// and it is idempotent.
+func EnsurePayoutExternalIDSequence(db *gorm.DB) error {
+	return db.Exec(fmt.Sprintf(`CREATE SEQUENCE IF NOT EXISTS %s START WITH %d`,
+		payoutReadExternalIDSequence, repository.PayoutReadExternalIDStart)).Error
+}
+
+func (r *PayoutRepository) NextReadExternalID(ctx context.Context) (string, error) {
+	var value int64
+	err := r.db.WithContext(ctx).
+		Raw(fmt.Sprintf(`SELECT nextval('%s')`, payoutReadExternalIDSequence)).
+		Row().Scan(&value)
+	if err != nil {
+		return "", payoutDBError(err)
+	}
+	return strconv.FormatInt(value, 10), nil
 }
 
 func (r *PayoutRepository) Create(ctx context.Context, payout *entity.Payout) error {

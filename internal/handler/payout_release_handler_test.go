@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/doku"
 	"github.com/serabutin/serabutin-id-backend/internal/middleware"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
@@ -431,7 +433,18 @@ func (f *fakePayoutReleaser) SyncTransferStatus(ctx context.Context, partnerRefe
 // syncFakeStore is an in-memory payout repository holding one submitted payout
 // (ID 1) under releaseTestRef.
 type syncFakeStore struct {
-	rows map[uint]*entity.Payout
+	rows    map[uint]*entity.Payout
+	readSeq int64
+}
+
+// NextReadExternalID mirrors the Postgres sequence: it starts at the read band.
+func (s *syncFakeStore) NextReadExternalID(ctx context.Context) (string, error) {
+	if s.readSeq == 0 {
+		s.readSeq = repository.PayoutReadExternalIDStart
+	}
+	id := s.readSeq
+	s.readSeq++
+	return strconv.FormatInt(id, 10), nil
 }
 
 func (s *syncFakeStore) Create(ctx context.Context, p *entity.Payout) error {

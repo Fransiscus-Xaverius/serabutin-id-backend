@@ -110,6 +110,11 @@ func main() {
 	if err := database.EnsurePayoutFingerprintIndexUnique(db); err != nil {
 		logger.Log.Fatal().Err(err).Msg("refusing to start: payout account fingerprint index")
 	}
+	// Read-only DOKU calls (status/balance) draw X-EXTERNAL-ID from a persisted
+	// sequence that lives above the money-moving band. Idempotent.
+	if err := gormrepo.EnsurePayoutExternalIDSequence(db); err != nil {
+		logger.Log.Fatal().Err(err).Msg("refusing to start: payout external id sequence")
+	}
 	// Drop the legacy one-review-per-booking unique index (replaced by the
 	// composite booking+author index).
 	if db.Migrator().HasIndex(&model.ReviewModel{}, "idx_reviews_booking_id") {

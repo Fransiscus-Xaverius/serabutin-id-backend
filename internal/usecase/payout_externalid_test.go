@@ -28,7 +28,7 @@ func TestPayoutUsecase_Release_SendsEachStepWithItsOwnExternalID(t *testing.T) {
 	require.Equal(t, uint(1), payout.ID)
 	assert.Equal(t, []string{"11"}, f.gateway.inquiryIDs, "inquiry is payoutID*10+1")
 	assert.Equal(t, []string{"12"}, f.gateway.paymentIDs, "payment is payoutID*10+2, never the inquiry id")
-	assert.Equal(t, []string{"1001"}, f.gateway.balanceIDs, "the balance check is a read: payoutID*1000 + its first attempt")
+	assert.Equal(t, []string{"1000000000"}, f.gateway.balanceIDs, "the balance check is a read: the first value of the read sequence")
 	assert.Empty(t, f.gateway.statusIDs)
 	assert.Equal(t, "12", f.payouts.rows[payout.ID].ExternalID, "the transfer's external id is persisted")
 }
@@ -36,15 +36,15 @@ func TestPayoutUsecase_Release_SendsEachStepWithItsOwnExternalID(t *testing.T) {
 // A read-only call never reuses an id: each one takes the payout's next attempt.
 func TestPayoutUsecase_SyncTransferStatus_EachReadTakesTheNextAttempt(t *testing.T) {
 	f, _ := syncFixture(t)
-	require.Equal(t, []string{"1001"}, f.gateway.balanceIDs)
+	require.Equal(t, []string{"1000000000"}, f.gateway.balanceIDs)
 
 	_, err := f.uc.SyncTransferStatus(context.Background(), "PO-42")
 	require.NoError(t, err)
 	_, err = f.uc.SyncTransferStatus(context.Background(), "PO-42")
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"1002", "1003"}, f.gateway.statusIDs, "status is payoutID*1000 + attempt, never the clock")
-	assert.Equal(t, []string{"1001"}, f.gateway.balanceIDs)
+	assert.Equal(t, []string{"1000000001", "1000000002"}, f.gateway.statusIDs, "each status read takes the next value of the read sequence")
+	assert.Equal(t, []string{"1000000000"}, f.gateway.balanceIDs)
 }
 
 // A retry of the same money-moving step reuses its id, so DOKU deduplicates it.
@@ -69,7 +69,7 @@ func TestPayoutUsecase_Release_RetryOfThePaymentReusesItsExternalID(t *testing.T
 	assert.Equal(t, entity.PayoutStatusSubmitted, payout.Status)
 	assert.Equal(t, []string{"11", "11"}, f.gateway.inquiryIDs)
 	assert.Equal(t, []string{"12", "12"}, f.gateway.paymentIDs)
-	assert.Equal(t, []string{"1002", "1003"}, f.gateway.statusIDs)
-	assert.Equal(t, []string{"1001", "1004"}, f.gateway.balanceIDs)
+	assert.Equal(t, []string{"1000000001", "1000000002"}, f.gateway.statusIDs)
+	assert.Equal(t, []string{"1000000000", "1000000003"}, f.gateway.balanceIDs)
 	assert.Equal(t, "12", f.payouts.rows[payout.ID].ExternalID)
 }

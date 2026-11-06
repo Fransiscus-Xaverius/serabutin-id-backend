@@ -42,11 +42,6 @@ const (
 	externalStepPayment = 2
 )
 
-// readExternalIDBase scales a payout id for the read-only calls: payoutID*1000
-// plus the payout's read attempt. A payout's reads stay far below 1000 a day at
-// the worker's cadence, so the numbers of one payout never run into the next.
-const readExternalIDBase = 1000
-
 var _ TransferGateway = (*doku.SubAccountClient)(nil)
 
 // SecretBox is the encryption boundary the payout usecase depends on.
@@ -663,16 +658,20 @@ func externalIDFor(payout *entity.Payout, step int64) string {
 	return strconv.FormatInt(int64(payout.ID)*10+step, 10)
 }
 
-// nextReadID takes the X-EXTERNAL-ID of the next read-only DOKU call of a
-// payout: payoutID*1000 + attempt. The attempt is persisted before the call
-// goes out, so no read reuses an id DOKU has already seen. Saving the attempt
-// also refreshes updated_at, which spaces out the next pass for this payout.
+// nextReadID takes the X-EXTERNAL-ID of the next read-only DOKU call from the
+// persisted read sequence, which never reaches the money-moving band. The
+// attempt is saved before the call goes out, and saving it also refreshes
+// updated_at, which spaces out the next pass for this payout.
 func (uc *PayoutUsecase) nextReadID(ctx context.Context, release *PayoutRelease, payout *entity.Payout) (string, error) {
+	readID, err := release.Payouts.NextReadExternalID(ctx)
+	if err != nil {
+		return "", err
+	}
 	payout.ReadAttempts++
 	if err := uc.save(ctx, release, payout, payout.Status); err != nil {
 		return "", err
 	}
-	return strconv.FormatInt(int64(payout.ID)*readExternalIDBase+int64(payout.ReadAttempts), 10), nil
+	return readID, nil
 }
 
 // reserve passes the settled-balance gate and records the payout as in flight,

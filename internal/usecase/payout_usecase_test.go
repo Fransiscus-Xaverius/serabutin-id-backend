@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/internal/dto"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/doku"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/encryption"
@@ -387,9 +389,22 @@ func TestPayoutUsecase_Get_ReturnsStoredAccountWithoutDecrypting(t *testing.T) {
 // Transition is the only status write, and every write refreshes updated_at.
 // A mutex makes it safe for the concurrent-release test.
 type fakePayoutRepo struct {
-	mu     sync.Mutex
-	rows   map[uint]*entity.Payout
-	nextID uint
+	mu      sync.Mutex
+	rows    map[uint]*entity.Payout
+	nextID  uint
+	readSeq int64
+}
+
+// NextReadExternalID mirrors the Postgres sequence: it starts at the read band.
+func (f *fakePayoutRepo) NextReadExternalID(ctx context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readSeq == 0 {
+		f.readSeq = repository.PayoutReadExternalIDStart
+	}
+	id := f.readSeq
+	f.readSeq++
+	return strconv.FormatInt(id, 10), nil
 }
 
 func (f *fakePayoutRepo) find(match func(*entity.Payout) bool) (*entity.Payout, error) {

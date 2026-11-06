@@ -79,10 +79,25 @@ func (f *handlerFakePaymentRepo) FindPendingExpired(ctx context.Context, now tim
 	return nil, nil
 }
 func (f *handlerFakePaymentRepo) MarkPaidAndActivateBooking(ctx context.Context, invoice string, paidAt time.Time) (*repository.PaymentTransition, error) {
-	return &repository.PaymentTransition{}, nil
+	p, ok := f.payments[invoice]
+	if !ok {
+		return &repository.PaymentTransition{}, apperror.NewDomainError(apperror.ErrNotFound, "PAYMENT_NOT_FOUND", "payment not found")
+	}
+	if p.Status == entity.PaymentStatusPending {
+		p.Status = entity.PaymentStatusPaid
+		p.PaidAt = &paidAt
+	}
+	return &repository.PaymentTransition{Payment: p, Applied: p.Status == entity.PaymentStatusPaid}, nil
 }
 func (f *handlerFakePaymentRepo) MarkExpiredAndExpireBooking(ctx context.Context, invoice string, now time.Time) (*repository.PaymentTransition, error) {
-	return &repository.PaymentTransition{}, nil
+	p, ok := f.payments[invoice]
+	if !ok {
+		return &repository.PaymentTransition{}, apperror.NewDomainError(apperror.ErrNotFound, "PAYMENT_NOT_FOUND", "payment not found")
+	}
+	if p.Status == entity.PaymentStatusPending {
+		p.Status = entity.PaymentStatusExpired
+	}
+	return &repository.PaymentTransition{Payment: p, Applied: p.Status == entity.PaymentStatusExpired}, nil
 }
 func (f *handlerFakePaymentRepo) MarkRefundPending(ctx context.Context, bookingID uint) error {
 	return nil
@@ -234,4 +249,88 @@ func TestPaymentHandler_MockEndpoints_AreDisabledOutsideMockMode(t *testing.T) {
 
 	assert.Equal(t, 404, status)
 	assert.Equal(t, "NOT_FOUND", body["code"])
+}
+
+func newPaymentHandlerAppSeeded(t *testing.T, mode string, gateway payment.Gateway, actor uint, bookings map[uint]*entity.Booking, payments map[string]*entity.Payment) *fiber.App {
+	t.Helper()
+	if payments == nil {
+		payments = map[string]*entity.Payment{}
+	}
+	paymentRepo := &handlerFakePaymentRepo{payments: payments}
+	bookingRepo := &handlerFakeBookingRepo{bookings: bookings}
+	uc := usecase.NewPaymentUsecase(paymentRepo, bookingRepo, nil, gateway, mode, []string{"qris"}, 60, "http://localhost:5173")
+	h := NewPaymentHandler(uc, 5000)
+
+	app := fiber.New(fiber.Config{ErrorHandler: apierror.GlobalErrorHandler})
+	app.Use(func(c fiber.Ctx) error {
+		if actor != 0 {
+			requestctx.SetUserID(c, actor)
+		}
+		return c.Next()
+	})
+	app.Get("/api/v1/booking-config", h.GetConfig)
+	app.Get("/api/v1/bookings/:id/payment", h.GetPayment)
+	app.Post("/api/v1/payments/doku/webhook", h.Webhook)
+	app.Post("/api/v1/payments/mock/:invoice/succeed", h.MockSucceed)
+	app.Post("/api/v1/payments/mock/:invoice/expire", h.MockExpire)
+	return app
+}
+
+func TestPaymentHandler_GetPayment_ReturnsPaymentForParticipant(t *testing.T) {
+	bookings := map[uint]*entity.Booking{1: {ID: 1, CustomerID: 10, ProviderID: 20}}
+	payments := map[string]*entity.Payment{"SRB-1-1": {ID: 1, BookingID: 1, InvoiceNumber: "SRB-1-1", Channel: "qris", Status: entity.PaymentStatusPending, Amount: 155000, PaymentURL: "https://pay.test/x"}}
+	app := newPaymentHandlerAppSeeded(t, "mock", &handlerFakeGateway{}, 10, bookings, payments)
+
+	status, body := doPaymentRequest(t, app, "GET", "/api/v1/bookings/1/payment", "")
+
+	require.Equal(t, 200, status)
+	data := body["data"].(map[string]interface{})
+	assert.Equal(t, "SRB-1-1", data["invoice_number"])
+	assert.Equal(t, "pending", data["status"])
+	assert.Equal(t, "https://pay.test/x", data["payment_url"])
+}
+
+func TestPaymentHandler_Webhook_AppliesSuccessfulNotification(t *testing.T) {
+	bookings := map[uint]*entity.Booking{1: {ID: 1, CustomerID: 10, ProviderID: 20, Status: entity.BookingStatusPendingPayment}}
+	payments := map[string]*entity.Payment{"SRB-1-1": {ID: 1, BookingID: 1, InvoiceNumber: "SRB-1-1", Status: entity.PaymentStatusPending, Amount: 20000}}
+	app := newPaymentHandlerAppSeeded(t, "sandbox", &handlerFakeGateway{}, 0, bookings, payments)
+
+	status, body := doPaymentRequest(t, app, "POST", "/api/v1/payments/doku/webhook",
+		`{"order":{"invoice_number":"SRB-1-1","amount":20000},"transaction":{"status":"SUCCESS"}}`)
+
+	require.Equal(t, 200, status)
+	assert.Equal(t, "SUCCESS", body["message"])
+	assert.Equal(t, entity.PaymentStatusPaid, payments["SRB-1-1"].Status)
+}
+
+func TestPaymentHandler_MockSucceed_MarksPaymentPaidInMockMode(t *testing.T) {
+	payments := map[string]*entity.Payment{"SRB-1-1": {ID: 1, BookingID: 1, InvoiceNumber: "SRB-1-1", Status: entity.PaymentStatusPending, Amount: 155000}}
+	app := newPaymentHandlerAppSeeded(t, "mock", &handlerFakeGateway{}, 0, nil, payments)
+
+	status, body := doPaymentRequest(t, app, "POST", "/api/v1/payments/mock/SRB-1-1/succeed", "")
+
+	require.Equal(t, 200, status)
+	data := body["data"].(map[string]interface{})
+	assert.Equal(t, "paid", data["status"])
+	assert.Equal(t, entity.PaymentStatusPaid, payments["SRB-1-1"].Status)
+}
+
+func TestPaymentHandler_MockExpire_MarksPaymentExpiredInMockMode(t *testing.T) {
+	payments := map[string]*entity.Payment{"SRB-1-1": {ID: 1, BookingID: 1, InvoiceNumber: "SRB-1-1", Status: entity.PaymentStatusPending, Amount: 155000}}
+	app := newPaymentHandlerAppSeeded(t, "mock", &handlerFakeGateway{}, 0, nil, payments)
+
+	status, body := doPaymentRequest(t, app, "POST", "/api/v1/payments/mock/SRB-1-1/expire", "")
+
+	require.Equal(t, 200, status)
+	data := body["data"].(map[string]interface{})
+	assert.Equal(t, "expired", data["status"])
+	assert.Equal(t, entity.PaymentStatusExpired, payments["SRB-1-1"].Status)
+}
+
+func TestPaymentHandler_MockSucceed_UnknownInvoiceReturnsError(t *testing.T) {
+	app := newPaymentHandlerAppSeeded(t, "mock", &handlerFakeGateway{}, 0, nil, map[string]*entity.Payment{})
+
+	status, _ := doPaymentRequest(t, app, "POST", "/api/v1/payments/mock/UNKNOWN/succeed", "")
+
+	assert.Equal(t, 404, status)
 }

@@ -7,9 +7,18 @@ import (
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
 )
 
+// PayoutReadExternalIDStart is the first X-EXTERNAL-ID of a read-only DOKU call.
+// Read ids come from a persisted sequence that starts here. The money-moving
+// ids are payoutID*10+step, which stay below this value for every payout id
+// under 100,000,000, so the two bands cannot collide.
+const PayoutReadExternalIDStart = 1000000000
+
 // PayoutRepository stores payouts. Only the payout usecase may drive a payout:
 // its status changes go through Transition, and nothing else may change it.
 type PayoutRepository interface {
+	// NextReadExternalID returns the next value of the read-only X-EXTERNAL-ID
+	// sequence. Values are persisted, monotonic and never repeat.
+	NextReadExternalID(ctx context.Context) (string, error)
 	// Create stores a new payout. A second payout for the same booking, or a
 	// partner reference number already in use, is rejected.
 	Create(ctx context.Context, payout *entity.Payout) error
