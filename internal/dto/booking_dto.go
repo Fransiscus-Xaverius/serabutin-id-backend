@@ -52,6 +52,7 @@ type BookingResponse struct {
 	PaymentMethod  string                 `json:"payment_method"`
 	Status         string                 `json:"status"`
 	Payment        *PaymentResponse       `json:"payment,omitempty"`
+	Payout         *PayoutReleaseResponse `json:"payout,omitempty"`
 	CancellationID *uint                  `json:"cancellation_id,omitempty"`
 	CancelledBy    *uint                  `json:"cancelled_by,omitempty"`
 	CancelledAt    *string                `json:"cancelled_at,omitempty"`

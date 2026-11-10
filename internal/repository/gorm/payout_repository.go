@@ -70,6 +70,23 @@ func (r *PayoutRepository) FindByPartnerReferenceNo(ctx context.Context, partner
 	return r.findOne(ctx, "partner_reference_no = ?", partnerReferenceNo)
 }
 
+// FindByDokuReferenceNo resolves the identifier a refund notification carries.
+// DOKU uses its own referenceNo (for example DK0018353); referenceNumber is
+// also accepted because some notification versions expose that value.
+func (r *PayoutRepository) FindByDokuReferenceNo(ctx context.Context, dokuReferenceNo string) (*entity.Payout, error) {
+	var m model.PayoutModel
+	err := r.db.WithContext(ctx).
+		Where("doku_reference_no = ? OR doku_reference_number = ?", dokuReferenceNo, dokuReferenceNo).
+		First(&m).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, payoutNotFoundError()
+		}
+		return nil, payoutDBError(err)
+	}
+	return toPayoutEntity(&m), nil
+}
+
 // FindSubmitted returns up to limit submitted payouts that were not reconciled
 // since reconciledBefore, never-reconciled rows first, so a payout DOKU keeps
 // answering about cannot starve the rest.
@@ -140,10 +157,22 @@ func (r *PayoutRepository) Transition(ctx context.Context, payoutID uint, from, 
 }
 
 func (r *PayoutRepository) Update(ctx context.Context, payout *entity.Payout) error {
-	result := r.db.WithContext(ctx).
-		Model(&model.PayoutModel{}).
-		Where("id = ?", payout.ID).
-		Updates(payoutUpdates(payout))
+	return r.update(ctx, payout, nil)
+}
+
+// UpdateIfStatus is the guarded write the payout save uses. The status is the
+// compare-and-swap value: a copy read before a concurrent transition cannot
+// overwrite the newer row's columns.
+func (r *PayoutRepository) UpdateIfStatus(ctx context.Context, payout *entity.Payout, expectedStatus string) error {
+	return r.update(ctx, payout, &expectedStatus)
+}
+
+func (r *PayoutRepository) update(ctx context.Context, payout *entity.Payout, expectedStatus *string) error {
+	query := r.db.WithContext(ctx).Model(&model.PayoutModel{}).Where("id = ?", payout.ID)
+	if expectedStatus != nil {
+		query = query.Where("status = ?", *expectedStatus)
+	}
+	result := query.Updates(payoutUpdates(payout))
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
 			return payoutDuplicateError()
@@ -151,6 +180,9 @@ func (r *PayoutRepository) Update(ctx context.Context, payout *entity.Payout) er
 		return payoutDBError(result.Error)
 	}
 	if result.RowsAffected == 0 {
+		if expectedStatus != nil {
+			return payoutStateChangedError()
+		}
 		return payoutNotFoundError()
 	}
 	return nil
@@ -182,6 +214,7 @@ func payoutUpdates(p *entity.Payout) map[string]interface{} {
 		"request_fingerprint":       p.RequestFingerprint,
 		"external_id":               nullableString(p.ExternalID),
 		"doku_inquiry_reference_no": p.DokuInquiryReferenceNo,
+		"doku_session_id":           p.DokuSessionID,
 		"doku_reference_no":         p.DokuReferenceNo,
 		"doku_reference_number":     p.DokuReferenceNumber,
 		"beneficiary_bank_code":     p.BeneficiaryBankCode,
@@ -212,6 +245,7 @@ func toPayoutModel(p *entity.Payout) *model.PayoutModel {
 		RequestFingerprint:                    p.RequestFingerprint,
 		ExternalID:                            nullableString(p.ExternalID),
 		DokuInquiryReferenceNo:                p.DokuInquiryReferenceNo,
+		DokuSessionID:                         p.DokuSessionID,
 		DokuReferenceNo:                       p.DokuReferenceNo,
 		DokuReferenceNumber:                   p.DokuReferenceNumber,
 		BeneficiaryBankCode:                   p.BeneficiaryBankCode,
@@ -243,6 +277,7 @@ func toPayoutEntity(m *model.PayoutModel) *entity.Payout {
 		RequestFingerprint:                    m.RequestFingerprint,
 		ExternalID:                            stringValue(m.ExternalID),
 		DokuInquiryReferenceNo:                m.DokuInquiryReferenceNo,
+		DokuSessionID:                         m.DokuSessionID,
 		DokuReferenceNo:                       m.DokuReferenceNo,
 		DokuReferenceNumber:                   m.DokuReferenceNumber,
 		BeneficiaryBankCode:                   m.BeneficiaryBankCode,
@@ -273,6 +308,12 @@ func payoutDuplicateError() error {
 
 func payoutDBError(err error) error {
 	return apperror.NewDomainError(apperror.ErrInternalServer, "DB_ERROR", err.Error())
+}
+
+// payoutStateChangedError reports that a guarded write lost the race with a
+// concurrent transition. The caller retries from a fresh read.
+func payoutStateChangedError() error {
+	return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_STATE_CHANGED", "the payout changed while it was being processed, retry the release")
 }
 
 var _ repository.PayoutRepository = (*PayoutRepository)(nil)

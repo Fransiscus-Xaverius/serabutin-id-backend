@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 )
 
 // Ticket 12: kill-switch store — DB durable intent + Redis runtime source,

@@ -31,6 +31,7 @@ type Payout struct {
 	ExternalID         string
 
 	DokuInquiryReferenceNo string
+	DokuSessionID          string
 	DokuReferenceNo        string
 	DokuReferenceNumber    string
 

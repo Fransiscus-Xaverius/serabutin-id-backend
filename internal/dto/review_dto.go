@@ -10,15 +10,15 @@ type CreateReviewRequest struct {
 }
 
 type ReviewResponse struct {
-	ID                  uint           `json:"id"`
-	Rating              int            `json:"rating"`
-	CommunicationRating int            `json:"communication_rating"`
-	QualityRating       int            `json:"quality_rating"`
-	ValueRating         int            `json:"value_rating"`
-	Comment             string         `json:"comment"`
-	Customer            ReviewUserInfo `json:"customer"`
+	ID                  uint             `json:"id"`
+	Rating              int              `json:"rating"`
+	CommunicationRating int              `json:"communication_rating"`
+	QualityRating       int              `json:"quality_rating"`
+	ValueRating         int              `json:"value_rating"`
+	Comment             string           `json:"comment"`
+	Customer            ReviewUserInfo   `json:"customer"`
 	Author              ReviewAuthorInfo `json:"author"`
-	CreatedAt           string         `json:"created_at"`
+	CreatedAt           string           `json:"created_at"`
 }
 
 type ReviewAuthorInfo struct {

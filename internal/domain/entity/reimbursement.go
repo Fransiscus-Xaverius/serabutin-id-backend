@@ -7,17 +7,17 @@ import "time"
 // Approval in v1 records the decision only — it never moves money
 // (payout adjustment stays manual).
 type Reimbursement struct {
-	ID         uint
-	BookingID  uint
-	FiledBy    uint
-	Amount     int64
-	Reason     string
+	ID          uint
+	BookingID   uint
+	FiledBy     uint
+	Amount      int64
+	Reason      string
 	EvidenceURL string
-	Status     string
-	DecidedBy  *uint
-	DecidedAt  *time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	Status      string
+	DecidedBy   *uint
+	DecidedAt   *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // Reimbursement statuses.

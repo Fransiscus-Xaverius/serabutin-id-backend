@@ -90,6 +90,7 @@ func toPayoutAccountResponse(account *entity.PayoutAccount) dto.PayoutAccountRes
 		BankCode:     account.BankCode,
 		BankName:     account.BankName,
 		AccountLast4: account.AccountLast4,
+		PhoneLast4:   account.PhoneLast4,
 		Status:       account.Status,
 		NameMismatch: account.NameMismatch,
 		UpdatedAt:    account.UpdatedAt.Format("2006-01-02T15:04:05Z"),

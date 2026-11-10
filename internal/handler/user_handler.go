@@ -11,8 +11,8 @@ import (
 )
 
 type UserHandler struct {
-	userUsecase  *usecase.UserUsecase
-	statsUsecase *usecase.StatsUsecase
+	userUsecase   *usecase.UserUsecase
+	statsUsecase  *usecase.StatsUsecase
 	reviewUsecase *usecase.ReviewUsecase
 }
 

@@ -42,7 +42,7 @@ const (
 	externalStepPayment = 2
 )
 
-var _ TransferGateway = (*doku.SubAccountClient)(nil)
+var _ TransferGateway = (*doku.SnapPayoutClient)(nil)
 
 // SecretBox is the encryption boundary the payout usecase depends on.
 type SecretBox interface {
@@ -71,6 +71,7 @@ type PayoutDestination struct {
 	BankName          string
 	AccountHolderName string
 	AccountNumber     string
+	Phone             string
 }
 
 // PayoutBookingLookup is the part of the booking repository a release reads.
@@ -87,19 +88,19 @@ type PayoutPaymentLookup interface {
 type TransferGateway interface {
 	TransferInquiry(ctx context.Context, externalID string, req doku.TransferInquiryRequest) (*doku.TransferInquiryResult, error)
 	TransferPayment(ctx context.Context, externalID string, req doku.TransferPaymentRequest) (*doku.TransferPaymentResult, error)
-	TransactionStatus(ctx context.Context, externalID string, partnerReferenceNo string) (*doku.TransactionStatusResult, error)
+	TransactionStatus(ctx context.Context, externalID string, req doku.TransactionStatusRequest) (*doku.TransactionStatusResult, error)
 	BalanceInquiry(ctx context.Context, externalID string, profileID string) (*doku.BalanceResult, error)
 }
 
 // PayoutRelease holds what only the money-moving path needs. It is attached
 // with WithRelease; without it Release and SyncTransferStatus refuse to run.
 type PayoutRelease struct {
-	Payouts     repository.PayoutRepository
-	Bookings    PayoutBookingLookup
-	Payments    PayoutPaymentLookup
-	Gateway     TransferGateway
-	FromAccount string
-	// ProfileID is the hub profile whose settled balance gates every release.
+	Payouts  repository.PayoutRepository
+	Bookings PayoutBookingLookup
+	Payments PayoutPaymentLookup
+	Gateway  TransferGateway
+	// ProfileID is the merchant payout account number used by the SNAP
+	// balance-inquiry call. It gates every release.
 	ProfileID string
 }
 
@@ -151,6 +152,11 @@ func (uc *PayoutUsecase) Upsert(ctx context.Context, userID uint, req dto.Payout
 	if err != nil {
 		return nil, err
 	}
+	phone := doku.NormalizePhone(req.Phone)
+	encryptedPhone, err := uc.secret.Encrypt(phone)
+	if err != nil {
+		return nil, err
+	}
 
 	// A re-save always starts unverified: a changed account number must be
 	// validated again.
@@ -160,7 +166,9 @@ func (uc *PayoutUsecase) Upsert(ctx context.Context, userID uint, req dto.Payout
 		BankName:                   strings.TrimSpace(req.BankName),
 		AccountHolderNameEncrypted: encryptedHolder,
 		AccountNumberEncrypted:     encryptedNumber,
+		PhoneEncrypted:             encryptedPhone,
 		AccountLast4:               lastFour(req.AccountNumber),
+		PhoneLast4:                 lastFour(phone),
 		AccountFingerprint:         fingerprint,
 		EncryptionKeyID:            uc.encryptionKeyID,
 		Status:                     entity.PayoutAccountStatusUnverified,
@@ -193,11 +201,16 @@ func (uc *PayoutUsecase) DecryptDestination(ctx context.Context, userID uint) (P
 	if err != nil {
 		return PayoutDestination{}, err
 	}
+	phone, err := uc.secret.Decrypt(account.PhoneEncrypted)
+	if err != nil {
+		return PayoutDestination{}, err
+	}
 	return PayoutDestination{
 		BankCode:          account.BankCode,
 		BankName:          account.BankName,
 		AccountHolderName: holder,
 		AccountNumber:     number,
+		Phone:             phone,
 	}, nil
 }
 
@@ -216,6 +229,16 @@ func normalizeName(name string) string {
 		}
 	}
 	return b.String()
+}
+
+// firstNonEmptyString returns the first non-blank value.
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // lastFour returns the last four characters of an account number for masked
@@ -280,17 +303,26 @@ func (uc *PayoutUsecase) Release(ctx context.Context, bookingID uint) (*entity.P
 	switch payout.Status {
 	case entity.PayoutStatusSubmitted, entity.PayoutStatusPaid:
 		return payout, nil
-	case entity.PayoutStatusInquiry, entity.PayoutStatusFailed:
+	case entity.PayoutStatusInquiry:
+		// A failed inquiry or a crash can leave the payout mid-flow. Ask DOKU
+		// first: only its typed not-found answer allows the inquiry and the
+		// payment to be sent again under the same partnerReferenceNo.
+		_, err := uc.redriveInquiry(ctx, release, payout)
+		if err != nil {
+			return nil, err
+		}
+		return payout, nil
+	case entity.PayoutStatusFailed:
 		// The provider may already hold this transfer, so its state is read
-		// before anything is sent. An unreadable state is never re-sent.
+		// before anything is sent. A failed payout that DOKU still reports as
+		// failed is attempted again under the same key. Real DOKU may replay
+		// the inquiry, which makes a new PO-<bookingID>-R<n> reference
+		// necessary; that scheme is not implemented yet.
 		from := payout.Status
-		wasFailed := from == entity.PayoutStatusFailed
 		if err := uc.reconcile(ctx, release, payout); err != nil {
 			return nil, uc.failTransfer(ctx, release, payout, "transaction status")
 		}
-		// A failed payout that DOKU still reports as failed is re-sent under
-		// the same key, which DOKU deduplicates. Any other answer is final.
-		if !wasFailed || payout.Status != entity.PayoutStatusFailed {
+		if payout.Status != entity.PayoutStatusFailed {
 			if err := uc.save(ctx, release, payout, from); err != nil {
 				return nil, err
 			}
@@ -309,7 +341,15 @@ func (uc *PayoutUsecase) reconcile(ctx context.Context, release *PayoutRelease, 
 	if err != nil {
 		return err
 	}
-	status, err := release.Gateway.TransactionStatus(ctx, readID, payout.PartnerReferenceNo)
+	number, err := uc.secret.Decrypt(payout.BeneficiaryAccountNumberEncrypted)
+	if err != nil {
+		return err
+	}
+	status, err := release.Gateway.TransactionStatus(ctx, readID, doku.TransactionStatusRequest{
+		PartnerReferenceNo:       payout.PartnerReferenceNo,
+		BeneficiaryAccountNumber: number,
+		BeneficiaryBankCode:      payout.BeneficiaryBankCode,
+	})
 	if err != nil {
 		return err
 	}
@@ -319,6 +359,16 @@ func (uc *PayoutUsecase) reconcile(ctx context.Context, release *PayoutRelease, 
 // applyTransactionStatus moves the payout to the state DOKU's answer describes.
 // An unknown code is an error and changes nothing.
 func applyTransactionStatus(payout *entity.Payout, status *doku.TransactionStatusResult) error {
+	// A transfer response can be lost after DOKU accepted the payment. The
+	// check-status answer then carries the same identifiers, so store them
+	// before the payout can become paid. A refund notification is resolved by
+	// this DOKU reference.
+	if payout.DokuReferenceNo == "" {
+		payout.DokuReferenceNo = status.OriginalReferenceNo
+	}
+	if payout.DokuSessionID == "" {
+		payout.DokuSessionID = status.SessionID
+	}
 	switch status.LatestStatus {
 	case doku.TransactionStatusSuccess:
 		now := time.Now()
@@ -328,7 +378,7 @@ func applyTransactionStatus(payout *entity.Payout, status *doku.TransactionStatu
 	case doku.TransactionStatusPending:
 		payout.Status = entity.PayoutStatusSubmitted
 		payout.LastError = ""
-	case doku.TransactionStatusFailed, doku.TransactionStatusRefunded, doku.TransactionStatusCanceled:
+	case doku.TransactionStatusFailed, doku.TransactionStatusRefunded:
 		payout.Status = entity.PayoutStatusFailed
 		payout.LastError = transferFailureReason(status)
 	default:
@@ -338,45 +388,32 @@ func applyTransactionStatus(payout *entity.Payout, status *doku.TransactionStatu
 }
 
 // transferFailureReason names why DOKU did not deliver the money. It keeps the
-// status code and DOKU's description, never the beneficiary details.
+// status code only: provider text can echo beneficiary data.
 func transferFailureReason(status *doku.TransactionStatusResult) string {
-	var label string
-	switch status.LatestStatus {
-	case doku.TransactionStatusRefunded:
+	label := "failed"
+	if status.LatestStatus == doku.TransactionStatusRefunded {
 		label = "refunded"
-	case doku.TransactionStatusCanceled:
-		label = "canceled"
-	default:
-		label = "failed"
 	}
-	reason := "doku transfer " + label + " (status " + status.LatestStatus + ")"
-	if desc := strings.TrimSpace(status.LatestStatusDesc); desc != "" {
-		reason += ": " + desc
-	}
-	if len(reason) > 255 {
-		reason = reason[:255]
-	}
-	return reason
+	return "doku transfer " + label + " (status " + status.LatestStatus + ")"
 }
 
-// checkSettlement refuses a release unless the hub's settled balance covers
-// the payout and every payout already in flight. The held
-// DOKU_MERCHANT_PENDING_IDR balance is not withdrawable, so it never counts.
+// checkSettlement refuses a release unless the merchant payout balance covers
+// the payout and every payout already in flight. A held balance never counts.
 func (uc *PayoutUsecase) checkSettlement(ctx context.Context, release *PayoutRelease, externalID string, amount int64, inFlight int64) error {
 	balance, err := release.Gateway.BalanceInquiry(ctx, externalID, release.ProfileID)
 	if err != nil {
-		return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_SETTLEMENT_UNAVAILABLE", "cannot read the settled balance, the payout was not released")
+		return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_SETTLEMENT_UNAVAILABLE", "cannot read the merchant payout balance, the payout was not released")
 	}
 	available, ok := balance.SettledAvailable()
 	if !ok {
-		return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_SETTLEMENT_UNAVAILABLE", "the hub has no settled DOKU_MERCHANT_IDR balance, the payout was not released")
+		return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_SETTLEMENT_UNAVAILABLE", "the merchant payout account has no available balance, the payout was not released")
 	}
 	cents, ok := settledCents(available)
 	if !ok {
-		return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_SETTLEMENT_UNAVAILABLE", "the settled balance is not a valid amount, the payout was not released")
+		return apperror.NewDomainError(apperror.ErrInternalServer, "PAYOUT_SETTLEMENT_UNAVAILABLE", "the merchant payout balance is not a valid amount, the payout was not released")
 	}
 	if cents < (amount+inFlight)*100 {
-		return apperror.NewDomainError(apperror.ErrValidation, "PAYOUT_INSUFFICIENT_SETTLED_BALANCE", "the settled balance is below the payout amount and the payouts in flight")
+		return apperror.NewDomainError(apperror.ErrValidation, "PAYOUT_INSUFFICIENT_SETTLED_BALANCE", "the merchant payout balance is below the payout amount and the payouts in flight")
 	}
 	return nil
 }
@@ -398,12 +435,13 @@ func settledCents(value string) (int64, bool) {
 	return cents, err == nil
 }
 
-// SyncTransferStatus records the outcome of a payout's transfer as DOKU's
-// transactions-status API reports it. The caller supplies only the partner
+// SyncTransferStatus records the outcome of a payout's transfer as the SNAP
+// check-status API reports it. The caller supplies only the partner
 // reference: the outcome is never taken from a notification body. A paid
-// payout returns unchanged without asking DOKU. Every attempt is stamped, so
-// the reconciliation waits before asking again; a failed attempt also keeps a
-// LastError, and the state is never changed by it.
+// payout returns unchanged without asking DOKU; a refund reopens it only
+// through SyncRefundStatus. Every attempt is stamped, so the reconciliation
+// waits before asking again; a failed attempt also keeps a LastError, and the
+// state is never changed by it.
 func (uc *PayoutUsecase) SyncTransferStatus(ctx context.Context, partnerReferenceNo string) (*entity.Payout, error) {
 	release, err := uc.releaseDeps()
 	if err != nil {
@@ -413,10 +451,39 @@ func (uc *PayoutUsecase) SyncTransferStatus(ctx context.Context, partnerReferenc
 	if err != nil {
 		return nil, err
 	}
-	if payout.Status == entity.PayoutStatusPaid {
+	return uc.syncStatus(ctx, release, payout, false)
+}
+
+// SyncRefundStatus reconciles a refund notification. A refund notification
+// carries only transactionId, which DOKU fills with its own transfer
+// reference. The outcome still comes from check-status: a paid payout stays
+// paid unless DOKU answers refunded or failed.
+func (uc *PayoutUsecase) SyncRefundStatus(ctx context.Context, transactionID string) (*entity.Payout, error) {
+	release, err := uc.releaseDeps()
+	if err != nil {
+		return nil, err
+	}
+	transactionID = strings.TrimSpace(transactionID)
+	if transactionID == "" {
+		return nil, apperror.NewDomainError(apperror.ErrValidation, "PAYOUT_NOTIFICATION_INVALID", "transaction id is required")
+	}
+	payout, err := release.Payouts.FindByDokuReferenceNo(ctx, transactionID)
+	if err != nil {
+		return nil, err
+	}
+	return uc.syncStatus(ctx, release, payout, true)
+}
+
+// syncStatus applies DOKU's answer. A paid payout is terminal for ordinary
+// status checks. The refund path may reopen it, but only when DOKU reports
+// refunded or failed; a late success or pending answer leaves it paid and
+// keeps its original paid_at.
+func (uc *PayoutUsecase) syncStatus(ctx context.Context, release *PayoutRelease, payout *entity.Payout, allowPaidRefund bool) (*entity.Payout, error) {
+	if payout.Status == entity.PayoutStatusPaid && !allowPaidRefund {
 		return payout, nil
 	}
 	from := payout.Status
+	paidAt := payout.PaidAt
 	now := time.Now()
 	payout.LastReconciledAt = &now
 	if err := uc.reconcile(ctx, release, payout); err != nil {
@@ -425,6 +492,11 @@ func (uc *PayoutUsecase) SyncTransferStatus(ctx context.Context, partnerReferenc
 			return nil, updateErr
 		}
 		return nil, err
+	}
+	if from == entity.PayoutStatusPaid && payout.Status != entity.PayoutStatusFailed {
+		payout.Status = entity.PayoutStatusPaid
+		payout.PaidAt = paidAt
+		payout.LastError = ""
 	}
 	if err := uc.save(ctx, release, payout, from); err != nil {
 		return nil, err
@@ -512,7 +584,15 @@ func (uc *PayoutUsecase) redriveInquiry(ctx context.Context, release *PayoutRele
 	if err != nil {
 		return false, err
 	}
-	status, err := release.Gateway.TransactionStatus(ctx, readID, payout.PartnerReferenceNo)
+	number, err := uc.secret.Decrypt(payout.BeneficiaryAccountNumberEncrypted)
+	if err != nil {
+		return false, err
+	}
+	status, err := release.Gateway.TransactionStatus(ctx, readID, doku.TransactionStatusRequest{
+		PartnerReferenceNo:       payout.PartnerReferenceNo,
+		BeneficiaryAccountNumber: number,
+		BeneficiaryBankCode:      payout.BeneficiaryBankCode,
+	})
 	switch {
 	case err == nil:
 		if err := applyTransactionStatus(payout, status); err != nil {
@@ -587,15 +667,15 @@ func (uc *PayoutUsecase) releaseDeps() (*PayoutRelease, error) {
 	return uc.release, nil
 }
 
-// releaseGate is the configuration a release needs: the hub profile and the
+// releaseGate is the configuration a release needs: the merchant payout
 // source account. It is the same condition the admin release is gated on.
 func (uc *PayoutUsecase) releaseGate() error {
 	release, err := uc.releaseDeps()
 	if err != nil {
 		return err
 	}
-	if release.ProfileID == "" || release.FromAccount == "" {
-		return errors.New("DOKU_HUB_PROFILE_ID and DOKU_SOURCE_ACCOUNT must be set")
+	if release.ProfileID == "" {
+		return errors.New("DOKU_PAYOUT_SOURCE_ACCOUNT must be set")
 	}
 	return nil
 }
@@ -697,21 +777,41 @@ func (uc *PayoutUsecase) reserve(ctx context.Context, release *PayoutRelease, pa
 	return uc.save(ctx, release, payout, from)
 }
 
-// transfer runs the inquiry and then the payment, each under the payout's
-// stored partnerReferenceNo. A retry always starts again at the inquiry, which
-// DOKU answers as a replay with the original referenceNo.
+// transfer runs the SNAP account inquiry and then the bank transfer, each
+// under the payout's stored partnerReferenceNo. A retry always starts again at
+// the inquiry, which DOKU answers as a replay with the original session.
 func (uc *PayoutUsecase) transfer(ctx context.Context, release *PayoutRelease, payout *entity.Payout) (*entity.Payout, error) {
 	number, err := uc.secret.Decrypt(payout.BeneficiaryAccountNumberEncrypted)
 	if err != nil {
 		return nil, err
 	}
+	holder, err := uc.secret.Decrypt(payout.BeneficiaryAccountHolderNameEncrypted)
+	if err != nil {
+		return nil, err
+	}
+	account, err := uc.repo.FindByUserID(ctx, payout.ProviderID)
+	if err != nil {
+		return nil, err
+	}
+	// Accounts saved before the SNAP migration have no phone column value.
+	// Leave it empty so the gateway can use DOKU_PAYOUT_CUSTOMER_NUMBER.
+	var phone string
+	if account.PhoneEncrypted != "" {
+		phone, err = uc.secret.Decrypt(account.PhoneEncrypted)
+		if err != nil {
+			return nil, err
+		}
+	}
 	inquiryReq := doku.TransferInquiryRequest{
 		PartnerReferenceNo:       payout.PartnerReferenceNo,
 		Amount:                   payout.Amount,
-		FromAccount:              release.FromAccount,
 		BeneficiaryBankCode:      payout.BeneficiaryBankCode,
 		BeneficiaryAccountNumber: number,
 		Remark:                   payoutRemark,
+		CustomerNumber:           doku.NormalizePhone(phone),
+		BeneficiaryName:          holder,
+		BeneficiaryPhone:         doku.NormalizePhone(phone),
+		BeneficiaryBankName:      account.BankName,
 	}
 	if err := uc.reserve(ctx, release, payout); err != nil {
 		return nil, err
@@ -721,27 +821,35 @@ func (uc *PayoutUsecase) transfer(ctx context.Context, release *PayoutRelease, p
 	if err != nil {
 		return nil, uc.failTransfer(ctx, release, payout, "transfer inquiry")
 	}
-	payout.DokuInquiryReferenceNo = inquiry.ReferenceNo
+	payout.DokuInquiryReferenceNo = firstNonEmptyString(inquiry.ReferenceNo, payout.DokuInquiryReferenceNo)
+	payout.DokuSessionID = firstNonEmptyString(inquiry.SessionID, payout.DokuSessionID)
 	payout.Replayed = inquiry.Replayed
 	if inquiry.Replayed {
-		// DOKU already holds this transfer, so the state it reports is final
-		// for this release: no payment is sent after a replayed inquiry.
-		if err := uc.reconcile(ctx, release, payout); err != nil {
+		// DOKU already holds the inquiry. Adopt the state it reports; only its
+		// typed not-found answer means no transfer was ever recorded, so the
+		// payment below is safe to send under the same partner reference.
+		switch err := uc.reconcile(ctx, release, payout); {
+		case err == nil:
+			if err := uc.save(ctx, release, payout, entity.PayoutStatusInquiry); err != nil {
+				return nil, err
+			}
+			return payout, nil
+		case errors.Is(err, doku.ErrTransactionNotFound):
+			// Continue to the payment.
+		default:
 			return nil, uc.failTransfer(ctx, release, payout, "transaction status")
 		}
-		if err := uc.save(ctx, release, payout, entity.PayoutStatusInquiry); err != nil {
-			return nil, err
-		}
-		return payout, nil
 	}
 	if err := uc.save(ctx, release, payout, entity.PayoutStatusInquiry); err != nil {
 		return nil, err
 	}
 
 	paymentExternalID := externalIDFor(payout, externalStepPayment)
+	sessionID := firstNonEmptyString(inquiry.SessionID, payout.DokuSessionID, inquiry.ReferenceNo)
 	paid, err := release.Gateway.TransferPayment(ctx, paymentExternalID, doku.TransferPaymentRequest{
 		TransferInquiryRequest: inquiryReq,
-		ReferenceNo:            inquiry.ReferenceNo,
+		ReferenceNo:            sessionID,
+		SessionID:              sessionID,
 		BeneficiaryAccountName: inquiry.BeneficiaryAccountName,
 	})
 	if err != nil {
@@ -772,8 +880,9 @@ func (uc *PayoutUsecase) transfer(ctx context.Context, release *PayoutRelease, p
 }
 
 // save writes a payout's state. The status moves only while the row is still
-// in from, the status this copy was read with. A stale copy fails here, before
-// any other column is written. The other columns follow through Update.
+// in from, the status this copy was read with. The guarded update then writes
+// the other columns only while the row still carries the resulting status, so
+// a stale copy cannot clear a newer paid_at or doku_session_id.
 func (uc *PayoutUsecase) save(ctx context.Context, release *PayoutRelease, payout *entity.Payout, from string) error {
 	moved, err := release.Payouts.Transition(ctx, payout.ID, from, payout.Status)
 	if err != nil {
@@ -782,7 +891,7 @@ func (uc *PayoutUsecase) save(ctx context.Context, release *PayoutRelease, payou
 	if !moved {
 		return payoutStateChangedError()
 	}
-	return release.Payouts.Update(ctx, payout)
+	return release.Payouts.UpdateIfStatus(ctx, payout, payout.Status)
 }
 
 // failTransfer records a failed provider step without the provider's raw

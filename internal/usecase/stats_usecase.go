@@ -75,11 +75,11 @@ func (uc *StatsUsecase) GetUserStats(ctx context.Context, userID uint) (*dto.Use
 			Name:      user.Name,
 			AvatarURL: user.AvatarURL,
 		},
-		Role:          user.Role,
-		MemberSince:   user.CreatedAt.Format("2006-01-02"),
-		JobsPosted:    int64(len(posted)),
+		Role:           user.Role,
+		MemberSince:    user.CreatedAt.Format("2006-01-02"),
+		JobsPosted:     int64(len(posted)),
 		ActiveListings: active,
-		HireRate:      hireRate,
-		TotalSpent:    spent,
+		HireRate:       hireRate,
+		TotalSpent:     spent,
 	}, nil
 }

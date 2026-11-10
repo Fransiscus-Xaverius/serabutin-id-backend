@@ -36,6 +36,10 @@ func reconcileFixture(t *testing.T) *releaseFixture {
 		require.NoError(t, f.payouts.Create(ctx, &entity.Payout{
 			BookingID: row.booking, ProviderID: 7, Amount: 150000, Currency: "IDR", Channel: payoutChannel,
 			Status: entity.PayoutStatusSubmitted, PartnerReferenceNo: row.ref,
+			BeneficiaryBankCode:                   "014",
+			BeneficiaryAccountNumberEncrypted:     "enc:1234567890",
+			BeneficiaryAccountHolderNameEncrypted: "enc:Siti Rahayu",
+			BeneficiaryLast4:                      "7890",
 		}))
 	}
 	f.gateway.statusByRef = map[string]*doku.TransactionStatusResult{}
@@ -245,8 +249,7 @@ func TestPayoutUsecase_ReconcileWorker_RunsOncePassAndStopsOnCancel(t *testing.T
 // returns at once and says so once in the log.
 func TestPayoutUsecase_ReconcileWorker_DoesNothingWhenTheReleaseIsNotConfigured(t *testing.T) {
 	cases := map[string]func(*PayoutRelease){
-		"no hub profile":    func(r *PayoutRelease) { r.ProfileID = "" },
-		"no source account": func(r *PayoutRelease) { r.FromAccount = "" },
+		"no source account": func(r *PayoutRelease) { r.ProfileID = "" },
 	}
 	for name, unset := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -288,7 +291,7 @@ func TestPayoutUsecase_StatusIsOnlySetThroughDOKU(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{
 		"Upsert", "Get", "DecryptDestination", "WithRelease",
-		"Release", "SyncTransferStatus", "ReconcileSubmitted",
+		"Release", "SyncTransferStatus", "SyncRefundStatus", "ReconcileSubmitted",
 		"ReconcileStalledInquiries",
 	}, methods)
 }

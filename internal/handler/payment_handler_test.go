@@ -239,7 +239,8 @@ func TestPaymentHandler_Webhook_AcknowledgesUnknownInvoice(t *testing.T) {
 		`{"order":{"invoice_number":"UNKNOWN-1","amount":10000},"transaction":{"status":"SUCCESS"}}`)
 
 	assert.Equal(t, 200, status, "an unknown invoice is acknowledged so DOKU stops retrying")
-	assert.Equal(t, "IGNORED", body["message"])
+	assert.Equal(t, "2000000", body["responseCode"])
+	assert.Equal(t, "Successful", body["responseMessage"])
 }
 
 func TestPaymentHandler_MockEndpoints_AreDisabledOutsideMockMode(t *testing.T) {
@@ -299,7 +300,8 @@ func TestPaymentHandler_Webhook_AppliesSuccessfulNotification(t *testing.T) {
 		`{"order":{"invoice_number":"SRB-1-1","amount":20000},"transaction":{"status":"SUCCESS"}}`)
 
 	require.Equal(t, 200, status)
-	assert.Equal(t, "SUCCESS", body["message"])
+	assert.Equal(t, "2000000", body["responseCode"])
+	assert.Equal(t, "Successful", body["responseMessage"])
 	assert.Equal(t, entity.PaymentStatusPaid, payments["SRB-1-1"].Status)
 }
 

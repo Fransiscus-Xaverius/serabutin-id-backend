@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	refreshTokenPrefix = "refresh_token:"
+	refreshTokenPrefix    = "refresh_token:"
 	accessBlacklistPrefix = "access_blacklist:"
-	userTokensPrefix   = "user_tokens:"
+	userTokensPrefix      = "user_tokens:"
 )
 
 type TokenRepository struct {

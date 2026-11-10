@@ -24,7 +24,7 @@ func inquiryFixture(t *testing.T, updatedAt time.Time) *releaseFixture {
 	require.NoError(t, f.payouts.Create(ctx, &entity.Payout{
 		BookingID: 45, ProviderID: 7, Amount: 150000, Currency: payoutCurrency, Channel: payoutChannel,
 		Status: entity.PayoutStatusInquiry, PartnerReferenceNo: "PO-45", DokuInquiryReferenceNo: "INQ-OLD",
-		BeneficiaryBankCode: "BCAIDJA", BeneficiaryAccountNumberEncrypted: "enc:1234567890",
+		BeneficiaryBankCode: "014", BeneficiaryAccountNumberEncrypted: "enc:1234567890",
 		BeneficiaryAccountHolderNameEncrypted: "enc:Siti Rahayu", BeneficiaryLast4: "7890",
 		BeneficiaryFingerprint: "keyed-fp",
 	}))
@@ -64,11 +64,11 @@ func TestPayoutUsecase_ReconcileStalledInquiries_RedrivesWithTheSameKeyOnlyOnNot
 func TestPayoutUsecase_ReconcileStalledInquiries_TransientStatusErrorSendsNothing(t *testing.T) {
 	cases := map[string]error{
 		"doku unavailable":          errTestDOKUDown,
-		"status 503":                errors.New("doku sub-account transactions-status returned HTTP 503"),
-		"status 401":                errors.New("doku sub-account transactions-status returned HTTP 401"),
-		"status 500":                errors.New("doku sub-account transactions-status returned HTTP 500"),
+		"status 503":                errors.New("doku snap check-status returned HTTP 503"),
+		"status 401":                errors.New("doku snap check-status returned HTTP 401"),
+		"status 500":                errors.New("doku snap check-status returned HTTP 500"),
 		"timeout":                   context.DeadlineExceeded,
-		"unparseable status answer": errors.New("parse doku sub-account /sub-account/v2.0/transactions-status response"),
+		"unparseable status answer": errors.New("parse doku snap /snap/v1.1/qr/qr-mpm-status response"),
 	}
 	for name, statusErr := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -184,4 +184,43 @@ func TestPayoutUsecase_ReconcileStalledInquiries_RespectsTheLimit(t *testing.T) 
 	require.NoError(t, err)
 	assert.Equal(t, 0, resolved)
 	assert.Empty(t, f.gateway.inquiries)
+}
+
+// A manual release of a payout stuck in inquiry must recover the same way the
+// worker does: check-status first, then re-drive only on DOKU's not-found.
+func TestPayoutUsecase_Release_RedrivesAStuckInquiry(t *testing.T) {
+	f, payout := syncFixture(t)
+	f.payouts.rows[payout.ID].Status = entity.PayoutStatusInquiry
+	f.gateway.inquiries, f.gateway.payments, f.gateway.statuses = nil, nil, nil
+	f.gateway.statusErrByRef = map[string]error{"PO-42": doku.ErrTransactionNotFound}
+
+	released, err := f.uc.Release(context.Background(), 42)
+
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutStatusSubmitted, released.Status)
+	assert.Equal(t, []string{"PO-42"}, f.gateway.statuses)
+	assert.Len(t, f.gateway.inquiries, 1)
+	assert.Len(t, f.gateway.payments, 1)
+	assert.Equal(t, "PO-42", f.gateway.payments[0].PartnerReferenceNo)
+}
+
+// A replayed inquiry is not proof that the payment was sent: the first
+// inquiry response may have been lost. When check-status has no transfer,
+// send the payment with the session DOKU returned (or the stored one).
+func TestPayoutUsecase_Release_ReplayedInquirySendsTheMissingPayment(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.gateway.inquiryResult = &doku.TransferInquiryResult{
+		ReferenceNo: "INQ-1", PartnerReferenceNo: "PO-42",
+		BeneficiaryAccountName: "SITI RAHAYU", SessionID: "SESS-1", Replayed: true,
+	}
+	f.gateway.statusErrByRef = map[string]error{"PO-42": doku.ErrTransactionNotFound}
+
+	payout, err := f.uc.Release(context.Background(), 42)
+
+	require.NoError(t, err)
+	assert.Equal(t, entity.PayoutStatusSubmitted, payout.Status)
+	assert.Len(t, f.gateway.inquiries, 1)
+	require.Len(t, f.gateway.payments, 1)
+	assert.Equal(t, "SESS-1", f.gateway.payments[0].SessionID)
+	assert.Equal(t, "PO-42", f.gateway.payments[0].PartnerReferenceNo)
 }

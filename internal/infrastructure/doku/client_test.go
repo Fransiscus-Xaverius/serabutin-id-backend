@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +43,7 @@ func TestSign_MatchesKnownVector(t *testing.T) {
 		testSecret,
 	)
 
-	assert.Equal(t, "Fm9vaHiSGbDOQ++HcVnfjTN3OitzftdCI9T1xMmec3o=", signature)
+	assert.Equal(t, "dW7B055GxI7rWHtW4/fxKrR0WY51BNtzsH0CpN9/wJE=", signature)
 }
 
 func TestNormalizePhone_ConvertsLocalNumbers(t *testing.T) {
@@ -70,10 +71,9 @@ func TestCreateCheckout_SendsSignedQRISRequest(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(Config{
-		ClientID:     testClientID,
-		SecretKey:    testSecret,
-		BaseURL:      server.URL,
-		HubAccountID: "SAC-1670-1628490169910",
+		ClientID:  testClientID,
+		SecretKey: testSecret,
+		BaseURL:   server.URL,
 	})
 
 	result, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
@@ -103,7 +103,8 @@ func TestCreateCheckout_SendsSignedQRISRequest(t *testing.T) {
 	assert.NotEmpty(t, capturedHeader.Get("Request-Timestamp"))
 	assert.Contains(t, capturedHeader.Get("Signature"), "HMACSHA256=")
 
-	// Body: QRIS only, correct amount, hub routing, callback.
+	// Body: QRIS only, correct amount, callback. Checkout settles into the
+	// main merchant account, so no additional_info is sent.
 	var sent map[string]interface{}
 	require.NoError(t, json.Unmarshal(capturedBody, &sent))
 
@@ -112,21 +113,20 @@ func TestCreateCheckout_SendsSignedQRISRequest(t *testing.T) {
 	assert.Equal(t, "SRB-42-1", order["invoice_number"])
 	assert.Equal(t, "IDR", order["currency"])
 	assert.Equal(t, "http://localhost:5173/payment/return?booking_id=42", order["callback_url_result"])
+	assert.Equal(t, "http://localhost:5173/payment/return?booking_id=42", order["callback_url_cancel"])
 
 	checkoutPayment := sent["payment"].(map[string]interface{})
 	assert.Equal(t, []interface{}{"QRIS"}, checkoutPayment["payment_method_types"])
 	assert.Equal(t, float64(60), checkoutPayment["payment_due_date"])
 
-	additionalInfo, ok := sent["additionalInfo"].(map[string]interface{})
-	require.True(t, ok, "hub account routing must be sent when a hub account is configured")
-	account := additionalInfo["account"].(map[string]interface{})
-	assert.Equal(t, "SAC-1670-1628490169910", account["id"])
+	_, hasAdditionalInfo := sent["additional_info"]
+	assert.False(t, hasAdditionalInfo, "checkout must not route to a WaaS sub-account")
 
 	customer := sent["customer"].(map[string]interface{})
 	assert.Equal(t, "6281234567890", customer["phone"])
 }
 
-func TestCreateCheckout_OmitsHubAccountWhenNotConfigured(t *testing.T) {
+func TestCreateCheckout_OmitsAdditionalInfoWhenNotConfigured(t *testing.T) {
 	var capturedBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedBody, _ = io.ReadAll(r.Body)
@@ -148,8 +148,45 @@ func TestCreateCheckout_OmitsHubAccountWhenNotConfigured(t *testing.T) {
 
 	var sent map[string]interface{}
 	require.NoError(t, json.Unmarshal(capturedBody, &sent))
-	_, hasAdditionalInfo := sent["additionalInfo"]
-	assert.False(t, hasAdditionalInfo, "no sub-account routing without a configured hub account")
+	_, hasAdditionalInfo := sent["additional_info"]
+	assert.False(t, hasAdditionalInfo, "no additional_info without a notification override")
+}
+
+// With only the notification override configured, the additional_info object
+// must carry the override and nothing else.
+func TestCreateCheckout_OverrideOnlyConfigSendsNoAccount(t *testing.T) {
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"response":{"payment":{"url":"https://checkout.doku.test/pay/6"}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		ClientID:                testClientID,
+		SecretKey:               testSecret,
+		BaseURL:                 server.URL,
+		OverrideNotificationURL: "https://tunnel.example/api/v1/payments/doku/webhook",
+	})
+
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		BookingID:     50,
+		InvoiceNumber: "SRB-50-1",
+		Amount:        10000,
+		ExpiryMinutes: 30,
+		Channel:       "qris",
+		RequestID:     "SRB-50-1",
+	})
+	require.NoError(t, err)
+
+	var sent map[string]interface{}
+	require.NoError(t, json.Unmarshal(capturedBody, &sent))
+
+	additional, ok := sent["additional_info"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "https://tunnel.example/api/v1/payments/doku/webhook", additional["override_notification_url"])
+	_, hasAccount := additional["account"]
+	assert.False(t, hasAccount, "checkout has no sub-account routing")
 }
 
 func TestCreateCheckout_SendsOverrideNotificationURLWhenConfigured(t *testing.T) {
@@ -350,6 +387,9 @@ func TestVerifyNotification_AcceptsMatchingSignature(t *testing.T) {
 		BaseURL:          "https://api-sandbox.doku.com",
 		NotificationPath: "/api/v1/payments/doku/webhook",
 	})
+	// Pin the clock to the notification timestamp so the replay guard does
+	// not reject this 2020 test vector.
+	client.now = func() time.Time { return time.Date(2020, 8, 11, 8, 45, 42, 0, time.UTC) }
 
 	signature := Sign(testClientID, "req-1", "2020-08-11T08:45:42Z", "/api/v1/payments/doku/webhook", Digest(body), testSecret)
 
@@ -371,6 +411,7 @@ func TestVerifyNotification_RejectsTamperedBodyAndWrongClient(t *testing.T) {
 		BaseURL:          "https://api-sandbox.doku.com",
 		NotificationPath: "/api/v1/payments/doku/webhook",
 	})
+	client.now = func() time.Time { return time.Date(2020, 8, 11, 8, 45, 42, 0, time.UTC) }
 
 	signature := Sign(testClientID, "req-1", "2020-08-11T08:45:42Z", "/api/v1/payments/doku/webhook", Digest(body), testSecret)
 	headers := map[string]string{
@@ -395,6 +436,133 @@ func TestVerifyNotification_RejectsTamperedBodyAndWrongClient(t *testing.T) {
 	err = client.VerifyNotification(body, wrongClient)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, payment.ErrInvalidSignature)
+}
+
+func TestVerifyNotification_RejectsStaleTimestamp(t *testing.T) {
+	body := []byte(`{"order":{"invoice_number":"SRB-1-2","amount":10000},"transaction":{"status":"SUCCESS"}}`)
+	client := NewClient(Config{
+		ClientID:         testClientID,
+		SecretKey:        testSecret,
+		BaseURL:          "https://api-sandbox.doku.com",
+		NotificationPath: "/api/v1/payments/doku/webhook",
+	})
+	// The notification is signed six minutes ago; the tolerance is 300
+	// seconds, so a captured notification cannot be replayed later.
+	client.now = func() time.Time { return time.Date(2020, 8, 11, 8, 51, 42, 0, time.UTC) }
+
+	stale := "2020-08-11T08:45:42Z"
+	signature := Sign(testClientID, "req-2", stale, "/api/v1/payments/doku/webhook", Digest(body), testSecret)
+
+	err := client.VerifyNotification(body, map[string]string{
+		"Client-Id":         testClientID,
+		"Request-Id":        "req-2",
+		"Request-Timestamp": stale,
+		"Signature":         "HMACSHA256=" + signature,
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, payment.ErrInvalidSignature)
+}
+
+func TestVerifyNotification_RejectsFutureTimestamp(t *testing.T) {
+	body := []byte(`{"order":{"invoice_number":"SRB-1-3","amount":10000},"transaction":{"status":"SUCCESS"}}`)
+	client := NewClient(Config{
+		ClientID:         testClientID,
+		SecretKey:        testSecret,
+		BaseURL:          "https://api-sandbox.doku.com",
+		NotificationPath: "/api/v1/payments/doku/webhook",
+	})
+	client.now = func() time.Time { return time.Date(2020, 8, 11, 8, 45, 42, 0, time.UTC) }
+
+	future := "2020-08-11T08:51:42Z"
+	signature := Sign(testClientID, "req-3", future, "/api/v1/payments/doku/webhook", Digest(body), testSecret)
+
+	err := client.VerifyNotification(body, map[string]string{
+		"Client-Id":         testClientID,
+		"Request-Id":        "req-3",
+		"Request-Timestamp": future,
+		"Signature":         "HMACSHA256=" + signature,
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, payment.ErrInvalidSignature)
+}
+
+func TestVerifyNotification_AcceptsOffsetTimestampWithinTolerance(t *testing.T) {
+	body := []byte(`{"order":{"invoice_number":"SRB-1-4","amount":10000},"transaction":{"status":"SUCCESS"}}`)
+	client := NewClient(Config{
+		ClientID:         testClientID,
+		SecretKey:        testSecret,
+		BaseURL:          "https://api-sandbox.doku.com",
+		NotificationPath: "/api/v1/payments/doku/webhook",
+	})
+	// 15:45:42+07:00 is the same instant as 08:45:42Z.
+	client.now = func() time.Time { return time.Date(2020, 8, 11, 8, 45, 30, 0, time.UTC) }
+
+	offset := "2020-08-11T15:45:42+07:00"
+	signature := Sign(testClientID, "req-4", offset, "/api/v1/payments/doku/webhook", Digest(body), testSecret)
+
+	err := client.VerifyNotification(body, map[string]string{
+		"Client-Id":         testClientID,
+		"Request-Id":        "req-4",
+		"Request-Timestamp": offset,
+		"Signature":         "HMACSHA256=" + signature,
+	})
+
+	require.NoError(t, err)
+}
+
+func TestCreateCheckout_RejectsOverlongInvoiceNumber(t *testing.T) {
+	client := NewClient(Config{ClientID: testClientID, SecretKey: testSecret, BaseURL: "https://api-sandbox.doku.com"})
+
+	invoice := strings.Repeat("A", 65)
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		BookingID:     48,
+		InvoiceNumber: invoice,
+		Amount:        10000,
+		ExpiryMinutes: 30,
+		Channel:       "qris",
+		RequestID:     "SRB-48-1",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "64")
+}
+
+func TestCreateCheckout_RejectsCardInvoiceOverThirtyCharacters(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"response":{"payment":{"url":"https://checkout.doku.test/pay/5"}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{ClientID: testClientID, SecretKey: testSecret, BaseURL: server.URL})
+
+	invoice := strings.Repeat("A", 31)
+	_, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		BookingID:     49,
+		InvoiceNumber: invoice,
+		Amount:        10000,
+		ExpiryMinutes: 30,
+		Channel:       "card",
+		RequestID:     "SRB-49-1",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "30")
+	assert.Equal(t, 0, calls, "an overlong card invoice must be rejected before any request leaves")
+
+	// Exactly 30 characters passes the acquirer cap.
+	ok, err := client.CreateCheckout(context.Background(), payment.CreateCheckoutRequest{
+		BookingID:     49,
+		InvoiceNumber: strings.Repeat("A", 30),
+		Amount:        10000,
+		ExpiryMinutes: 30,
+		Channel:       "card",
+		RequestID:     "SRB-49-2",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ok)
+	assert.Equal(t, 1, calls)
 }
 
 func TestParseExpiredDate_UsesWIB(t *testing.T) {

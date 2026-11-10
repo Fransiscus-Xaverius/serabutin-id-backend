@@ -35,7 +35,7 @@ services:
     build: .
     container_name: serabutin-api
     ports:
-      - "3000:3000"
+      - "3005:3000"
     environment:
       APP_NAME: serabutin-id-backend
       PORT: 3000
@@ -51,7 +51,7 @@ services:
       BCRYPT_COST: 4
       STORAGE_DRIVER: local
       STORAGE_LOCAL_PATH: ./uploads
-      STORAGE_LOCAL_URL: ${STORAGE_LOCAL_URL:-http://localhost:3000/uploads}
+      STORAGE_LOCAL_URL: ${STORAGE_LOCAL_URL:-http://localhost:3005/uploads}
       # Prepayment: local development simulates the DOKU checkout so the
       # whole flow is testable without credentials. Use sandbox/production
       # with real credentials outside development.
@@ -59,7 +59,24 @@ services:
       DOKU_CLIENT_ID: ${DOKU_CLIENT_ID:-}
       DOKU_SECRET_KEY: ${DOKU_SECRET_KEY:-}
       DOKU_BASE_URL: ${DOKU_BASE_URL:-https://api-sandbox.doku.com}
-      DOKU_HUB_ACCOUNT_ID: ${DOKU_HUB_ACCOUNT_ID:-}
+      # SNAP may use another host (a local stub in tests). Empty falls back
+      # to DOKU_BASE_URL.
+      DOKU_SNAP_BASE_URL: ${DOKU_SNAP_BASE_URL:-}
+      DOKU_NOTIFICATION_PATH: ${DOKU_NOTIFICATION_PATH:-/api/v1/payments/doku/webhook}
+      # Kirim DOKU SNAP (Domestic Payouts). Leave empty to refuse releases
+      # with 503 PAYOUT_RELEASE_NOT_CONFIGURED.
+      DOKU_SNAP_CLIENT_ID: ${DOKU_SNAP_CLIENT_ID:-}
+      DOKU_SNAP_CLIENT_SECRET: ${DOKU_SNAP_CLIENT_SECRET:-}
+      DOKU_SNAP_PRIVATE_KEY: ${DOKU_SNAP_PRIVATE_KEY:-}
+      DOKU_PAYOUT_CHANNEL_ID: ${DOKU_PAYOUT_CHANNEL_ID:-11}
+      DOKU_PAYOUT_SOURCE_ACCOUNT: ${DOKU_PAYOUT_SOURCE_ACCOUNT:-}
+      DOKU_PAYOUT_SENDER_FIRST_NAME: ${DOKU_PAYOUT_SENDER_FIRST_NAME:-}
+      DOKU_PAYOUT_SENDER_LAST_NAME: ${DOKU_PAYOUT_SENDER_LAST_NAME:-}
+      DOKU_PAYOUT_SENDER_PERSONAL_ID: ${DOKU_PAYOUT_SENDER_PERSONAL_ID:-}
+      DOKU_PAYOUT_SENDER_PERSONAL_ID_TYPE: ${DOKU_PAYOUT_SENDER_PERSONAL_ID_TYPE:-KTP}
+      DOKU_PAYOUT_SENDER_COUNTRY_CODE: ${DOKU_PAYOUT_SENDER_COUNTRY_CODE:-ID}
+      DOKU_PAYOUT_CUSTOMER_NUMBER: ${DOKU_PAYOUT_CUSTOMER_NUMBER:-}
+      DOKU_PAYOUT_NOTIFICATION_AGENT_KEY: ${DOKU_PAYOUT_NOTIFICATION_AGENT_KEY:-}
       DOKU_PAYMENT_METHODS: ${DOKU_PAYMENT_METHODS:-qris}
       PAYMENT_EXPIRY_MINUTES: ${PAYMENT_EXPIRY_MINUTES:-60}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:5173}

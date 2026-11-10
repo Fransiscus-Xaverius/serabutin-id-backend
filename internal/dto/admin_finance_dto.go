@@ -75,7 +75,7 @@ type ReimbursementRow struct {
 
 type ReimbursementListResponse struct {
 	Data       []ReimbursementRow `json:"data"`
-	Pagination PaginationMeta    `json:"pagination"`
+	Pagination PaginationMeta     `json:"pagination"`
 }
 
 // ReimbursementFileRequest is the provider-facing filing payload. Filing
