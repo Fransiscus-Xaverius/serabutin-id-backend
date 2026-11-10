@@ -31,15 +31,15 @@ type AdminReviewVisibilityRequest struct {
 // AdminReportRow is one report-queue row: who flagged what, why, and the
 // lifecycle status.
 type AdminReportRow struct {
-	ID         uint    `json:"id"`
-	ReporterID uint    `json:"reporter_id"`
-	TargetType string  `json:"target_type"`
-	TargetID   uint    `json:"target_id"`
-	Reason     string  `json:"reason"`
-	Detail     string  `json:"detail,omitempty"`
-	Status     string  `json:"status"`
-	ResolvedBy *uint   `json:"resolved_by,omitempty"`
-	CreatedAt  string  `json:"created_at"`
+	ID         uint   `json:"id"`
+	ReporterID uint   `json:"reporter_id"`
+	TargetType string `json:"target_type"`
+	TargetID   uint   `json:"target_id"`
+	Reason     string `json:"reason"`
+	Detail     string `json:"detail,omitempty"`
+	Status     string `json:"status"`
+	ResolvedBy *uint  `json:"resolved_by,omitempty"`
+	CreatedAt  string `json:"created_at"`
 }
 
 type AdminReportListResponse struct {

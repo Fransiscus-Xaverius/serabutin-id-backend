@@ -2,12 +2,14 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/internal/dto"
 	"github.com/serabutin/serabutin-id-backend/internal/usecase"
@@ -21,6 +23,7 @@ type AdminHandler struct {
 	cancelRepo     repository.CancellationRepository
 	notificationUC *usecase.NotificationUsecase
 	bookingRepo    repository.BookingRepository
+	payoutRepo     repository.PayoutRepository
 	userUsecase    *usecase.ProfileUsecase
 	serviceUsecase *usecase.ServiceUsecase
 	auditRepo      repository.AuditLogRepository
@@ -65,6 +68,12 @@ func NewAdminHandler(
 		adminBookingUC: adminBookingUC,
 		imageResolver:  imageResolver,
 	}
+}
+
+// SetPayoutRepo attaches the payout read model, so the booking detail can
+// show whether the Mitra was already paid through Kirim DOKU SNAP.
+func (h *AdminHandler) SetPayoutRepo(repo repository.PayoutRepository) {
+	h.payoutRepo = repo
 }
 
 // SetAdminReviewUC attaches the reviews/reports moderation usecase. Kept as
@@ -278,6 +287,16 @@ func (h *AdminHandler) GetBooking(c fiber.Ctx) error {
 	}
 	if booking.Payment != nil {
 		resp.Payment = toPaymentResponse(booking.Payment)
+	}
+	if h.payoutRepo != nil {
+		payout, err := h.payoutRepo.FindByBookingID(c.Context(), booking.ID)
+		switch {
+		case err == nil:
+			release := toPayoutReleaseResponse(payout)
+			resp.Payout = &release
+		case !errors.Is(err, apperror.ErrNotFound):
+			return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+		}
 	}
 	return response.Success(c, fiber.StatusOK, resp)
 }

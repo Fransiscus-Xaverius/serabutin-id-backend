@@ -17,11 +17,11 @@ type AdminUserStats struct {
 // the cancelled slice of Total30d; the cancel rate is derived in the
 // usecase. GMV sums Total over non-cancelled bookings in the window.
 type AdminBookingStats struct {
-	ByStatus    map[string]int64
-	Total30d    int64
+	ByStatus     map[string]int64
+	Total30d     int64
 	Cancelled30d int64
-	GMV30d      int64
-	Fees30d     int64
+	GMV30d       int64
+	Fees30d      int64
 }
 
 // AdminServiceStats carries the moderation-relevant service counts.

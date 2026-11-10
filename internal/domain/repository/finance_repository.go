@@ -22,16 +22,16 @@ type FinanceSummary struct {
 // FinanceTransaction is one booking rendered as a money row for
 // GET /admin/transactions.
 type FinanceTransaction struct {
-	ID           uint
-	CustomerID   uint
-	ProviderID   uint
-	ServiceID    uint
-	SubTotal     int64
-	PlatformFee  int64
-	Total        int64
+	ID            uint
+	CustomerID    uint
+	ProviderID    uint
+	ServiceID     uint
+	SubTotal      int64
+	PlatformFee   int64
+	Total         int64
 	PaymentMethod string
-	Status       string
-	CreatedAt    time.Time
+	Status        string
+	CreatedAt     time.Time
 }
 
 // FinancePayout is one provider's computed earnings for a YYYY-MM period

@@ -81,12 +81,19 @@ func (h *PaymentHandler) Webhook(c fiber.Ctx) error {
 		if isPaymentNotFound(err) {
 			// DOKU retries notifications it could not confirm. An invoice we
 			// do not know about is acknowledged so the retry storm stops.
-			return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "IGNORED"})
+			return c.Status(fiber.StatusOK).JSON(dokuNotificationAck())
 		}
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
 
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "SUCCESS"})
+	return c.Status(fiber.StatusOK).JSON(dokuNotificationAck())
+}
+
+// dokuNotificationAck is the acknowledgement body DOKU documents for an
+// accepted notification: HTTP 200 with exactly this payload. Any other
+// successful shape makes DOKU keep retrying (reference 06, section 2).
+func dokuNotificationAck() fiber.Map {
+	return fiber.Map{"responseCode": "2000000", "responseMessage": "Successful"}
 }
 
 // MockSucceed simulates a successful QRIS payment. It only exists while the

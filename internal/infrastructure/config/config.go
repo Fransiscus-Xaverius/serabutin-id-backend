@@ -3,12 +3,15 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/spf13/viper"
 
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
+	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/doku"
 	"github.com/serabutin/serabutin-id-backend/internal/infrastructure/encryption"
 )
 
@@ -61,7 +64,6 @@ type Config struct {
 	DOKUClientID         string
 	DOKUSecretKey        string
 	DOKUBaseURL          string
-	DOKUHubAccountID     string
 	DOKUNotificationPath string
 	// DOKUOverrideNotificationURL points notifications at another host (a
 	// local tunnel) for one request. DOKU requires the URL path to match
@@ -79,12 +81,22 @@ type Config struct {
 	PayoutEncryptionKey   []byte
 	PayoutEncryptionKeyID string
 
-	// DOKUHubProfileID is the hub sub-account whose settled balance gates a
-	// payout release. DOKUSourceAccount is the hub's DOKU_MERCHANT_IDR account
-	// number, the account money leaves from. Both are empty until DOKU has
-	// activated the hub sub-account, and a release is refused while either is.
-	DOKUHubProfileID  string
-	DOKUSourceAccount string
+	// Kirim DOKU SNAP (Domestic Payouts). These are separate from the
+	// checkout credentials because the payout path also signs with an RSA
+	// private key. The SNAP client id/secret fall back to the checkout pair.
+	DOKUSnapBaseURL                string
+	DOKUSnapClientID               string
+	DOKUSnapClientSecret           string
+	DOKUSnapPrivateKey             string
+	DOKUPayoutChannelID            string
+	DOKUPayoutSourceAccount        string
+	DOKUPayoutSenderFirstName      string
+	DOKUPayoutSenderLastName       string
+	DOKUPayoutSenderPersonalID     string
+	DOKUPayoutSenderPersonalIDType string
+	DOKUPayoutSenderCountryCode    string
+	DOKUPayoutCustomerNumber       string
+	DOKUPayoutNotificationAgentKey string
 }
 
 const (
@@ -150,9 +162,6 @@ func Load() (*Config, error) {
 	viper.SetDefault("DOKU_CLIENT_ID", "")
 	viper.SetDefault("DOKU_SECRET_KEY", "")
 	viper.SetDefault("DOKU_BASE_URL", "https://api-sandbox.doku.com")
-	viper.SetDefault("DOKU_HUB_ACCOUNT_ID", "")
-	viper.SetDefault("DOKU_HUB_PROFILE_ID", "")
-	viper.SetDefault("DOKU_SOURCE_ACCOUNT", "")
 	viper.SetDefault("DOKU_NOTIFICATION_PATH", "/api/v1/payments/doku/webhook")
 	viper.SetDefault("DOKU_OVERRIDE_NOTIFICATION_URL", "")
 	viper.SetDefault("DOKU_PAYMENT_METHODS", "qris")
@@ -213,10 +222,29 @@ func Load() (*Config, error) {
 	cfg.DOKUClientID = viper.GetString("DOKU_CLIENT_ID")
 	cfg.DOKUSecretKey = viper.GetString("DOKU_SECRET_KEY")
 	cfg.DOKUBaseURL = viper.GetString("DOKU_BASE_URL")
-	cfg.DOKUHubAccountID = viper.GetString("DOKU_HUB_ACCOUNT_ID")
-	cfg.DOKUHubProfileID = strings.TrimSpace(viper.GetString("DOKU_HUB_PROFILE_ID"))
-	cfg.DOKUSourceAccount = strings.TrimSpace(viper.GetString("DOKU_SOURCE_ACCOUNT"))
-	cfg.DOKUNotificationPath = viper.GetString("DOKU_NOTIFICATION_PATH")
+	cfg.DOKUSnapBaseURL = strings.TrimSpace(viper.GetString("DOKU_SNAP_BASE_URL"))
+	if cfg.DOKUSnapBaseURL == "" {
+		cfg.DOKUSnapBaseURL = cfg.DOKUBaseURL
+	}
+	cfg.DOKUNotificationPath = strings.TrimSpace(viper.GetString("DOKU_NOTIFICATION_PATH"))
+	cfg.DOKUSnapClientID = strings.TrimSpace(viper.GetString("DOKU_SNAP_CLIENT_ID"))
+	cfg.DOKUSnapClientSecret = strings.TrimSpace(viper.GetString("DOKU_SNAP_CLIENT_SECRET"))
+	cfg.DOKUSnapPrivateKey = viper.GetString("DOKU_SNAP_PRIVATE_KEY")
+	cfg.DOKUPayoutChannelID = strings.TrimSpace(viper.GetString("DOKU_PAYOUT_CHANNEL_ID"))
+	if cfg.DOKUPayoutChannelID == "" {
+		cfg.DOKUPayoutChannelID = "11"
+	}
+	cfg.DOKUPayoutSourceAccount = strings.TrimSpace(viper.GetString("DOKU_PAYOUT_SOURCE_ACCOUNT"))
+	cfg.DOKUPayoutSenderFirstName = strings.TrimSpace(viper.GetString("DOKU_PAYOUT_SENDER_FIRST_NAME"))
+	cfg.DOKUPayoutSenderLastName = strings.TrimSpace(viper.GetString("DOKU_PAYOUT_SENDER_LAST_NAME"))
+	cfg.DOKUPayoutSenderPersonalID = strings.TrimSpace(viper.GetString("DOKU_PAYOUT_SENDER_PERSONAL_ID"))
+	cfg.DOKUPayoutSenderPersonalIDType = strings.TrimSpace(viper.GetString("DOKU_PAYOUT_SENDER_PERSONAL_ID_TYPE"))
+	cfg.DOKUPayoutSenderCountryCode = strings.TrimSpace(viper.GetString("DOKU_PAYOUT_SENDER_COUNTRY_CODE"))
+	if cfg.DOKUPayoutSenderCountryCode == "" {
+		cfg.DOKUPayoutSenderCountryCode = "ID"
+	}
+	cfg.DOKUPayoutCustomerNumber = strings.TrimSpace(viper.GetString("DOKU_PAYOUT_CUSTOMER_NUMBER"))
+	cfg.DOKUPayoutNotificationAgentKey = strings.TrimSpace(viper.GetString("DOKU_PAYOUT_NOTIFICATION_AGENT_KEY"))
 	cfg.DOKUOverrideNotificationURL = strings.TrimRight(strings.TrimSpace(viper.GetString("DOKU_OVERRIDE_NOTIFICATION_URL")), "/")
 	cfg.DOKUPaymentMethods = ParsePaymentChannels(viper.GetString("DOKU_PAYMENT_METHODS"))
 	cfg.PaymentExpiryMinutes = viper.GetInt("PAYMENT_EXPIRY_MINUTES")
@@ -232,6 +260,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := ValidatePaymentChannels(cfg.DOKUPaymentMethods); err != nil {
+		return nil, err
+	}
+	if err := ValidateNotificationOverrideURL(cfg.DOKUOverrideNotificationURL); err != nil {
+		return nil, err
+	}
+	if err := ValidateNotificationPath(cfg.DOKUNotificationPath); err != nil {
 		return nil, err
 	}
 
@@ -268,21 +302,89 @@ func RequirePayoutEncryptionKey(cfg *Config) error {
 	return nil
 }
 
-// RequirePayoutRelease reports why a payout release cannot run yet. A release
-// needs the hub's profile and source account, which DOKU provides only once the
-// hub sub-account is activated. The error names the variables, never their values.
+// RequirePayoutRelease reports why a Kirim DOKU SNAP payout release cannot run
+// yet. It names the missing variables, never their values. There is no WaaS
+// activation step: these are credentials and identity fields on the existing
+// DOKU merchant account.
 func RequirePayoutRelease(cfg *Config) error {
 	var missing []string
-	if cfg.DOKUHubProfileID == "" {
-		missing = append(missing, "DOKU_HUB_PROFILE_ID")
+	if firstNonEmpty(cfg.DOKUSnapClientID, cfg.DOKUClientID) == "" {
+		missing = append(missing, "DOKU_SNAP_CLIENT_ID or DOKU_CLIENT_ID")
 	}
-	if cfg.DOKUSourceAccount == "" {
-		missing = append(missing, "DOKU_SOURCE_ACCOUNT")
+	if firstNonEmpty(cfg.DOKUSnapClientSecret, cfg.DOKUSecretKey) == "" {
+		missing = append(missing, "DOKU_SNAP_CLIENT_SECRET or DOKU_SECRET_KEY")
+	}
+	if strings.TrimSpace(cfg.DOKUSnapPrivateKey) == "" {
+		missing = append(missing, "DOKU_SNAP_PRIVATE_KEY")
+	} else if err := doku.ValidatePayoutPrivateKey(cfg.DOKUSnapPrivateKey); err != nil {
+		return fmt.Errorf("DOKU_SNAP_PRIVATE_KEY is not usable: %w", err)
+	}
+	if cfg.DOKUPayoutChannelID == "" {
+		missing = append(missing, "DOKU_PAYOUT_CHANNEL_ID")
+	}
+	if cfg.DOKUPayoutSourceAccount == "" {
+		missing = append(missing, "DOKU_PAYOUT_SOURCE_ACCOUNT")
+	}
+	if cfg.DOKUPayoutSenderFirstName == "" {
+		missing = append(missing, "DOKU_PAYOUT_SENDER_FIRST_NAME")
+	}
+	if cfg.DOKUPayoutSenderLastName == "" {
+		missing = append(missing, "DOKU_PAYOUT_SENDER_LAST_NAME")
+	}
+	if cfg.DOKUPayoutSenderPersonalID == "" {
+		missing = append(missing, "DOKU_PAYOUT_SENDER_PERSONAL_ID")
+	}
+	if cfg.DOKUPayoutSenderPersonalIDType == "" {
+		missing = append(missing, "DOKU_PAYOUT_SENDER_PERSONAL_ID_TYPE")
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("payout release is not configured: %s must be set once DOKU has activated the hub sub-account", strings.Join(missing, " and "))
+		return fmt.Errorf("payout release is not configured: %s must be set", strings.Join(missing, ", "))
+	}
+	if err := validatePayoutBaseURL(cfg.Environment, firstNonEmpty(cfg.DOKUSnapBaseURL, cfg.DOKUBaseURL)); err != nil {
+		return err
 	}
 	return nil
+}
+
+// validatePayoutBaseURL keeps RSA-signed transfer requests on TLS, or on a
+// loopback/private host in development for the labeled SNAP stub. A public
+// HTTP host is never accepted: its check-status answer decides whether a
+// payout is paid.
+func validatePayoutBaseURL(environment, raw string) error {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fmt.Errorf("DOKU_SNAP_BASE_URL or DOKU_BASE_URL must be set")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("DOKU_SNAP_BASE_URL is not a valid absolute URL")
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme != "http" {
+		return fmt.Errorf("DOKU_SNAP_BASE_URL must use https")
+	}
+	if strings.EqualFold(environment, "production") {
+		return fmt.Errorf("DOKU_SNAP_BASE_URL must use https in production")
+	}
+	host := parsed.Hostname()
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsPrivate() {
+		return nil
+	}
+	return fmt.Errorf("DOKU_SNAP_BASE_URL may use http only for a loopback or private host in development")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // DecodePayoutEncryptionKey decodes the base64 encryption key from the
@@ -334,6 +436,41 @@ func ValidatePaymentChannels(channels []string) error {
 			return fmt.Errorf("duplicate payment channel %q in DOKU_PAYMENT_METHODS", slug)
 		}
 		seen[slug] = struct{}{}
+	}
+	return nil
+}
+
+// notificationURLLimit is the hard cap DOKU enforces on notification URLs:
+// the Back Office rejects longer values (references 06 and 07).
+const notificationURLLimit = 64
+
+// ValidateNotificationOverrideURL checks the optional per-request
+// notification override against the documented URL rules: HTTPS only and at
+// most 64 characters. An empty value means no override, which is valid.
+func ValidateNotificationOverrideURL(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	if !strings.HasPrefix(trimmed, "https://") {
+		return fmt.Errorf("DOKU_OVERRIDE_NOTIFICATION_URL must use https, got %q", trimmed)
+	}
+	if len(trimmed) > notificationURLLimit {
+		return fmt.Errorf("DOKU_OVERRIDE_NOTIFICATION_URL must be at most %d characters, got %d", notificationURLLimit, len(trimmed))
+	}
+	return nil
+}
+
+// ValidateNotificationPath checks the path DOKU posts notifications to: it
+// must be an absolute path so the signature Request-Target stays unambiguous.
+func ValidateNotificationPath(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		// Empty falls back to the client default.
+		return nil
+	}
+	if !strings.HasPrefix(trimmed, "/") || strings.ContainsAny(trimmed, " \t\n") {
+		return fmt.Errorf("DOKU_NOTIFICATION_PATH must be an absolute path starting with /, got %q", trimmed)
 	}
 	return nil
 }

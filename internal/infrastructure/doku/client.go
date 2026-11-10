@@ -25,6 +25,15 @@ const (
 	signaturePrefix       = "HMACSHA256="
 	defaultNotification   = "/api/v1/payments/doku/webhook"
 	defaultRequestTimeout = 15 * time.Second
+	// NotificationTimestampDrift is the replay guard for inbound
+	// notifications: DOKU documents a tolerance of 300 seconds around
+	// Request-Timestamp (references 06 and 07 of the DOKU skill).
+	NotificationTimestampDrift = 300 * time.Second
+	// DOKU caps invoice numbers at 64 characters, or 30 when a card
+	// channel takes part (acquirer rule; references 01 and 07).
+	invoiceNumberLimit     = 64
+	cardInvoiceNumberLimit = 30
+	dokuCardChannelName    = "CREDIT_CARD"
 )
 
 // Config is the DOKU Checkout (non-SNAP) configuration. Secrets must come
@@ -33,7 +42,6 @@ type Config struct {
 	ClientID         string
 	SecretKey        string
 	BaseURL          string
-	HubAccountID     string
 	NotificationPath string
 	// OverrideNotificationURL lets a single request point DOKU at another
 	// host (e.g. a local tunnel) while keeping the same URL path. DOKU
@@ -165,6 +173,18 @@ func (c *Client) VerifyNotification(rawBody []byte, headers map[string]string) e
 		return fmt.Errorf("%w: client id mismatch", payment.ErrInvalidSignature)
 	}
 
+	// Replay guard: a notification older (or further ahead) than the
+	// documented 300 second tolerance is rejected even when its signature
+	// is valid, so a captured notification cannot be replayed later.
+	sentAt, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return fmt.Errorf("%w: notification timestamp is not RFC3339: %q", payment.ErrInvalidSignature, timestamp)
+	}
+	drift := c.now().Sub(sentAt)
+	if drift > NotificationTimestampDrift || drift < -NotificationTimestampDrift {
+		return fmt.Errorf("%w: notification timestamp outside the %s tolerance", payment.ErrInvalidSignature, NotificationTimestampDrift)
+	}
+
 	signature := strings.TrimSpace(strings.TrimPrefix(signatureHeader, signaturePrefix))
 	if signature == "" || signature == signatureHeader {
 		return fmt.Errorf("%w: unsupported signature format", payment.ErrInvalidSignature)
@@ -184,15 +204,27 @@ func (c *Client) checkoutBody(req payment.CreateCheckoutRequest) (checkoutReques
 		return checkoutRequest{}, fmt.Errorf("unknown payment channel %q", req.Channel)
 	}
 
+	// DOKU rejects long invoice numbers only after the checkout is created,
+	// so the limit is enforced here: 64 characters in general, 30 when the
+	// card channel takes part (acquirer rule, reference 01 section 4).
+	invoiceLimit := invoiceNumberLimit
+	if channel == dokuCardChannelName {
+		invoiceLimit = cardInvoiceNumberLimit
+	}
+	if len(req.InvoiceNumber) > invoiceLimit {
+		return checkoutRequest{}, fmt.Errorf("invoice number %q exceeds the %d character DOKU limit for channel %s", req.InvoiceNumber, invoiceLimit, channel)
+	}
+
 	body := checkoutRequest{
 		Order: checkoutOrder{
-			Amount:         req.Amount,
-			InvoiceNumber:  req.InvoiceNumber,
-			Currency:       req.Currency,
-			CallbackURL:    req.CallbackURL,
-			CallbackURLRsl: req.CallbackURL,
-			AutoRedirect:   true,
-			Language:       "ID",
+			Amount:            req.Amount,
+			InvoiceNumber:     req.InvoiceNumber,
+			Currency:          req.Currency,
+			CallbackURL:       req.CallbackURL,
+			CallbackURLRsl:    req.CallbackURL,
+			CallbackURLCancel: req.CallbackURL,
+			AutoRedirect:      true,
+			Language:          "ID",
 		},
 		Payment: checkoutPayment{
 			PaymentDueDate:     req.ExpiryMinutes,
@@ -212,16 +244,11 @@ func (c *Client) checkoutBody(req payment.CreateCheckoutRequest) (checkoutReques
 	if body.Payment.PaymentDueDate <= 0 {
 		body.Payment.PaymentDueDate = 60
 	}
-	if c.cfg.HubAccountID != "" {
-		body.AdditionalInfo = &checkoutAdditionalInfo{
-			Account: checkoutAccount{ID: c.cfg.HubAccountID},
-		}
-	}
 	if c.cfg.OverrideNotificationURL != "" {
-		// DOKU expects the override under additional_info (snake_case);
-		// the sub-account routing above uses additionalInfo (camelCase).
-		// Both keys can coexist in one request.
-		body.Additional = &checkoutAdditional{
+		// Checkout settles into the main merchant account. The only
+		// additional_info field left is the per-request notification
+		// override; there is no sub-account routing and no split rule.
+		body.AdditionalInfo = &checkoutAdditionalInfo{
 			OverrideNotificationURL: c.cfg.OverrideNotificationURL,
 		}
 	}
@@ -232,22 +259,25 @@ type checkoutRequest struct {
 	Order          checkoutOrder           `json:"order"`
 	Payment        checkoutPayment         `json:"payment"`
 	Customer       checkoutCustomer        `json:"customer"`
-	AdditionalInfo *checkoutAdditionalInfo `json:"additionalInfo,omitempty"`
-	Additional     *checkoutAdditional     `json:"additional_info,omitempty"`
+	AdditionalInfo *checkoutAdditionalInfo `json:"additional_info,omitempty"`
 }
 
-type checkoutAdditional struct {
+// checkoutAdditionalInfo carries the snake_case additional_info object DOKU
+// documents for Checkout. Serabutin only uses the notification override:
+// checkout settles into the main merchant account, with no WaaS sub-account.
+type checkoutAdditionalInfo struct {
 	OverrideNotificationURL string `json:"override_notification_url,omitempty"`
 }
 
 type checkoutOrder struct {
-	Amount         int64  `json:"amount"`
-	InvoiceNumber  string `json:"invoice_number"`
-	Currency       string `json:"currency"`
-	CallbackURL    string `json:"callback_url"`
-	CallbackURLRsl string `json:"callback_url_result"`
-	AutoRedirect   bool   `json:"auto_redirect"`
-	Language       string `json:"language"`
+	Amount            int64  `json:"amount"`
+	InvoiceNumber     string `json:"invoice_number"`
+	Currency          string `json:"currency"`
+	CallbackURL       string `json:"callback_url"`
+	CallbackURLRsl    string `json:"callback_url_result"`
+	CallbackURLCancel string `json:"callback_url_cancel,omitempty"`
+	AutoRedirect      bool   `json:"auto_redirect"`
+	Language          string `json:"language"`
 }
 
 type checkoutPayment struct {
@@ -261,14 +291,6 @@ type checkoutCustomer struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
 	Phone string `json:"phone"`
-}
-
-type checkoutAdditionalInfo struct {
-	Account checkoutAccount `json:"account"`
-}
-
-type checkoutAccount struct {
-	ID string `json:"id"`
 }
 
 type checkoutResponse struct {
@@ -289,10 +311,24 @@ func Digest(rawBody []byte) string {
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
-// Sign returns base64(HMAC-SHA256(secret, clientID+"\n"+requestID+"\n"+
-// timestamp+"\n"+target+"\n"+digest)).
+// Sign returns base64(HMAC-SHA256(secret, stringToSign)) where stringToSign
+// carries the component labels, as DOKU documents for non-SNAP request
+// headers (verified against the live sandbox on 2026-11-08; the unlabelled
+// variant is answered with 400 invalid_signature):
+//
+//	Client-Id:<id>
+//	Request-Id:<requestID>
+//	Request-Timestamp:<timestamp>
+//	Request-Target:<target>
+//	Digest:<digest>
 func Sign(clientID, requestID, timestamp, requestTarget, digest, secret string) string {
-	stringToSign := strings.Join([]string{clientID, requestID, timestamp, requestTarget, digest}, "\n")
+	stringToSign := strings.Join([]string{
+		"Client-Id:" + clientID,
+		"Request-Id:" + requestID,
+		"Request-Timestamp:" + timestamp,
+		"Request-Target:" + requestTarget,
+		"Digest:" + digest,
+	}, "\n")
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(stringToSign))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))

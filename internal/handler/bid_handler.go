@@ -14,16 +14,18 @@ import (
 )
 
 type BidHandler struct {
-	bidUsecase    *usecase.BidUsecase
-	userUsecase   *usecase.ProfileUsecase
+	bidUsecase     *usecase.BidUsecase
+	userUsecase    *usecase.ProfileUsecase
 	serviceUsecase *usecase.ServiceUsecase
+	imageResolver  repository.StorageRepository
 }
 
-func NewBidHandler(bidUsecase *usecase.BidUsecase, userUsecase *usecase.ProfileUsecase, serviceUsecase *usecase.ServiceUsecase) *BidHandler {
+func NewBidHandler(bidUsecase *usecase.BidUsecase, userUsecase *usecase.ProfileUsecase, serviceUsecase *usecase.ServiceUsecase, imageResolver repository.StorageRepository) *BidHandler {
 	return &BidHandler{
-		bidUsecase:    bidUsecase,
-		userUsecase:   userUsecase,
+		bidUsecase:     bidUsecase,
+		userUsecase:    userUsecase,
 		serviceUsecase: serviceUsecase,
+		imageResolver:  imageResolver,
 	}
 }
 
@@ -77,18 +79,32 @@ func (h *BidHandler) GetByService(c fiber.Ctx) error {
 	if err != nil {
 		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
 	}
+	service, err := h.serviceUsecase.GetService(c.Context(), uint(serviceID))
+	if err != nil {
+		return apierror.GlobalErrorHandler(c, apierror.FromDomainError(err))
+	}
+	imageURL := ""
+	if len(service.Images) > 0 && h.imageResolver != nil {
+		imageURL = h.imageResolver.ResolveImageURL(service.Images[0].URL)
+	}
 
 	data := make([]dto.BidResponse, len(bids))
 	for i, bid := range bids {
 		provider, _ := h.userUsecase.GetProfile(c.Context(), bid.ProviderID)
 		resp := dto.BidResponse{
-			ID:        bid.ID,
-			ServiceID: bid.ServiceID,
-			Price:     bid.Price,
-			Notes:     bid.Notes,
-			Status:    bid.Status,
-			CreatedAt: bid.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: bid.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			ID:                 bid.ID,
+			ServiceID:          bid.ServiceID,
+			Price:              bid.Price,
+			Notes:              bid.Notes,
+			Status:             bid.Status,
+			CreatedAt:          bid.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:          bid.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			ServiceTitle:       service.Title,
+			ServiceCategory:    service.Category,
+			ServiceDescription: service.Description,
+			ServiceLocation:    service.ServiceAreas,
+			ServiceType:        service.ServiceType,
+			ServiceImage:       imageURL,
 		}
 		if provider != nil {
 			resp.Provider = &dto.BookingUserInfo{ID: provider.ID, Name: provider.Name}

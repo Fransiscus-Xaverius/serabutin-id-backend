@@ -9,14 +9,14 @@ type AdminStatsUsersResponse struct {
 
 // AdminStatsBookingsResponse is the bookings block of GET /admin/stats.
 type AdminStatsBookingsResponse struct {
-	ByStatus     map[string]int64 `json:"by_status"`
-	Total30d     int64            `json:"total_30d"`
-	CancelRate30d float64         `json:"cancel_rate_30d"`
+	ByStatus      map[string]int64 `json:"by_status"`
+	Total30d      int64            `json:"total_30d"`
+	CancelRate30d float64          `json:"cancel_rate_30d"`
 }
 
 // AdminStatsGMVResponse is the gmv block of GET /admin/stats.
 type AdminStatsGMVResponse struct {
-	Total30d         int64 `json:"total_30d"`
+	Total30d        int64 `json:"total_30d"`
 	PlatformFees30d int64 `json:"platform_fees_30d"`
 }
 

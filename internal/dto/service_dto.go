@@ -3,7 +3,7 @@ package dto
 import "errors"
 
 type CreateServiceRequest struct {
-	Title           string                `json:"title" validate:"required,min=3,max=100"`
+	Title string `json:"title" validate:"required,min=3,max=100"`
 	// Category validates against the taxonomy table in the usecase (422
 	// UNKNOWN_CATEGORY); the shape tag only bounds length so admin-created
 	// slugs pass binding. Ticket 10.

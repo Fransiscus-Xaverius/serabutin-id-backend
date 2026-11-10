@@ -6,14 +6,14 @@ import "time"
 // Status lifecycle (pending -> approved|rejected) is enforced by the
 // admin finance usecase; approval records the decision only.
 type ReimbursementModel struct {
-	ID          uint       `gorm:"primaryKey"`
-	BookingID   uint       `gorm:"index;not null"`
-	FiledBy     uint       `gorm:"index;not null"`
-	Amount      int64      `gorm:"not null"`
-	Reason      string     `gorm:"size:500;not null"`
-	EvidenceURL string     `gorm:"size:500"`
-	Status      string     `gorm:"size:20;index;not null;default:pending"`
-	DecidedBy   *uint      `gorm:"index"`
+	ID          uint   `gorm:"primaryKey"`
+	BookingID   uint   `gorm:"index;not null"`
+	FiledBy     uint   `gorm:"index;not null"`
+	Amount      int64  `gorm:"not null"`
+	Reason      string `gorm:"size:500;not null"`
+	EvidenceURL string `gorm:"size:500"`
+	Status      string `gorm:"size:20;index;not null;default:pending"`
+	DecidedBy   *uint  `gorm:"index"`
 	DecidedAt   *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

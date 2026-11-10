@@ -73,7 +73,7 @@ func TestGenerateTokenPair_ReturnsAllFields(t *testing.T) {
 }
 
 func TestValidateRefreshToken_ValidToken_ReturnsUserIDAndUUID(t *testing.T) {
-	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t, 15*time.Minute, 7*24*time.Hour)
 
 	td, err := svc.GenerateTokenPair(42, "user@test.com")
 	require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestValidateRefreshToken_ValidToken_ReturnsUserIDAndUUID(t *testing.T) {
 }
 
 func TestValidateRefreshToken_ExpiredToken_ReturnsError(t *testing.T) {
-	svc := setupTokenService(t,15*time.Minute, -1*time.Second)
+	svc := setupTokenService(t, 15*time.Minute, -1*time.Second)
 
 	td, err := svc.GenerateTokenPair(1, "test@example.com")
 	require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestValidateRefreshToken_ExpiredToken_ReturnsError(t *testing.T) {
 }
 
 func TestValidateRefreshToken_AccessToken_ReturnsError(t *testing.T) {
-	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t, 15*time.Minute, 7*24*time.Hour)
 
 	td, err := svc.GenerateTokenPair(1, "test@example.com")
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestValidateRefreshToken_AccessToken_ReturnsError(t *testing.T) {
 }
 
 func TestValidateRefreshToken_MalformedToken_ReturnsError(t *testing.T) {
-	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t, 15*time.Minute, 7*24*time.Hour)
 
 	_, _, err := svc.ValidateRefreshToken("not-a-valid-token")
 
@@ -125,7 +125,7 @@ func TestValidateRefreshToken_MalformedToken_ReturnsError(t *testing.T) {
 }
 
 func TestExtractAccessUUID_ValidToken_ReturnsUUID(t *testing.T) {
-	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t, 15*time.Minute, 7*24*time.Hour)
 
 	td, err := svc.GenerateTokenPair(1, "test@example.com")
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestExtractAccessUUID_ValidToken_ReturnsUUID(t *testing.T) {
 }
 
 func TestExtractAccessUUID_MalformedToken_ReturnsError(t *testing.T) {
-	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t, 15*time.Minute, 7*24*time.Hour)
 
 	_, err := svc.ExtractAccessUUID("not.a.valid.jwt")
 
@@ -145,7 +145,7 @@ func TestExtractAccessUUID_MalformedToken_ReturnsError(t *testing.T) {
 }
 
 func TestExtractAccessUUID_RandomString_ReturnsError(t *testing.T) {
-	svc := setupTokenService(t,15*time.Minute, 7*24*time.Hour)
+	svc := setupTokenService(t, 15*time.Minute, 7*24*time.Hour)
 
 	_, err := svc.ExtractAccessUUID(strings.Repeat("a", 50))
 

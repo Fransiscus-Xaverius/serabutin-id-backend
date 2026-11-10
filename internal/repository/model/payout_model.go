@@ -21,8 +21,9 @@ type PayoutModel struct {
 	ExternalID         *string `gorm:"size:64;uniqueIndex"`
 
 	DokuInquiryReferenceNo string `gorm:"size:64"`
-	DokuReferenceNo        string `gorm:"size:64"`
-	DokuReferenceNumber    string `gorm:"size:64"`
+	DokuSessionID          string `gorm:"size:64"`
+	DokuReferenceNo        string `gorm:"size:64;index"`
+	DokuReferenceNumber    string `gorm:"size:64;index"`
 
 	BeneficiaryBankCode                   string `gorm:"size:16"`
 	BeneficiaryAccountHolderNameEncrypted string `gorm:"type:text"`

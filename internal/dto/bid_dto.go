@@ -31,7 +31,7 @@ type BidStatusCounts struct {
 }
 
 type BidListResponse struct {
-	Data       []BidResponse  `json:"data"`
-	Pagination PaginationMeta `json:"pagination"`
+	Data       []BidResponse   `json:"data"`
+	Pagination PaginationMeta  `json:"pagination"`
 	Counts     BidStatusCounts `json:"counts"`
 }

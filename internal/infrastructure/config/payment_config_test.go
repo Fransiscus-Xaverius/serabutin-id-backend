@@ -189,4 +189,56 @@ func TestLoad_WhitespaceOnlyPayoutKeyIsAbsentAndStartupCheckRejectsIt(t *testing
 	require.Error(t, RequirePayoutEncryptionKey(cfg))
 }
 
+func TestValidateNotificationOverrideURL_AcceptsEmptyAndShortHTTPSURL(t *testing.T) {
+	require.NoError(t, ValidateNotificationOverrideURL(""))
+	require.NoError(t, ValidateNotificationOverrideURL("   "))
+	require.NoError(t, ValidateNotificationOverrideURL("https://t.run/api/v1/payments/doku/webhook"))
+}
+
+func TestValidateNotificationOverrideURL_RejectsNonHTTPSAndOver64Characters(t *testing.T) {
+	err := ValidateNotificationOverrideURL("http://tunnel.example/api/v1/payments/doku/webhook")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "https")
+
+	// 65 characters: the Back Office and the checkout API reject longer
+	// notification URLs (references 06 and 07).
+	tooLong := "https://a-very-long-subdomain.example.com/api/v1/payments/doku/webhook"
+	require.Greater(t, len(tooLong), 64)
+	err = ValidateNotificationOverrideURL(tooLong)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "64")
+}
+
+func TestValidateNotificationPath_AcceptsEmptyAndAbsolutePath(t *testing.T) {
+	require.NoError(t, ValidateNotificationPath(""))
+	require.NoError(t, ValidateNotificationPath("/api/v1/payments/doku/webhook"))
+}
+
+func TestValidateNotificationPath_RejectsRelativePathAndWhitespace(t *testing.T) {
+	err := ValidateNotificationPath("api/v1/payments/doku/webhook")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absolute path")
+
+	err = ValidateNotificationPath("/api/v1/payments/doku/webhook extra")
+	require.Error(t, err)
+}
+
 func strPtr(s string) *string { return &s }
+
+func TestLoad_SnapBaseURLFallsBackToDokuBaseURL(t *testing.T) {
+	t.Setenv("DOKU_BASE_URL", "https://checkout.example")
+	t.Setenv("DOKU_SNAP_BASE_URL", "")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, "https://checkout.example", cfg.DOKUSnapBaseURL)
+}
+
+func TestLoad_SnapBaseURLCanDifferFromCheckout(t *testing.T) {
+	t.Setenv("DOKU_BASE_URL", "https://checkout.example")
+	t.Setenv("DOKU_SNAP_BASE_URL", "http://127.0.0.1:8099")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:8099", cfg.DOKUSnapBaseURL)
+}

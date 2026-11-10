@@ -18,7 +18,9 @@ type PayoutAccount struct {
 	BankName                   string
 	AccountHolderNameEncrypted string
 	AccountNumberEncrypted     string
+	PhoneEncrypted             string
 	AccountLast4               string
+	PhoneLast4                 string
 	AccountFingerprint         string
 	EncryptionKeyID            string
 	Status                     string

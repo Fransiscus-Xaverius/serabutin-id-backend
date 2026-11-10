@@ -38,7 +38,7 @@ func (s *TokenService) GenerateTokenPair(userID uint, email string) (*entity.Tok
 
 	atClaims := jwt.MapClaims{
 		"user_id":     userID,
-		"email":      email,
+		"email":       email,
 		"access_uuid": td.AccessUUID,
 		"exp":         td.AtExpires.Unix(),
 		"iat":         time.Now().Unix(),

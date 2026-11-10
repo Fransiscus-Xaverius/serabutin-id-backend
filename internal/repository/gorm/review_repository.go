@@ -38,7 +38,7 @@ func (r *ReviewRepository) Create(ctx context.Context, review *entity.Review) er
 
 type reviewWithCustomer struct {
 	model.ReviewModel
-	CustomerName  string
+	CustomerName   string
 	CustomerAvatar string
 }
 

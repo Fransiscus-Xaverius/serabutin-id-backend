@@ -11,13 +11,13 @@ import "time"
 // written as-is, which keeps the API-level default (active=true when the
 // request omits the field) intact.
 type BannerModel struct {
-	ID        uint `gorm:"primaryKey"`
-	Title     string `gorm:"size:255;not null"`
-	ImageURL  string `gorm:"size:500;not null"`
-	LinkURL   string `gorm:"size:500"`
-	Placement string `gorm:"size:30;not null;default:home;index"`
-	SortOrder int    `gorm:"not null;default:0"`
-	Active    bool   `gorm:"not null;default:false;index"`
+	ID        uint       `gorm:"primaryKey"`
+	Title     string     `gorm:"size:255;not null"`
+	ImageURL  string     `gorm:"size:500;not null"`
+	LinkURL   string     `gorm:"size:500"`
+	Placement string     `gorm:"size:30;not null;default:home;index"`
+	SortOrder int        `gorm:"not null;default:0"`
+	Active    bool       `gorm:"not null;default:false;index"`
 	StartsAt  *time.Time `gorm:"index"`
 	EndsAt    *time.Time
 	CreatedAt time.Time
@@ -33,7 +33,7 @@ func (BannerModel) TableName() string {
 // for the same zero-value reason as BannerModel.Active (F1 class): a
 // not-yet-reviewed row must not enter the public taxonomy by accident.
 type CategoryModel struct {
-	ID        uint `gorm:"primaryKey"`
+	ID        uint   `gorm:"primaryKey"`
 	Slug      string `gorm:"size:50;uniqueIndex;not null"`
 	Name      string `gorm:"size:100;not null"`
 	Icon      string `gorm:"size:50"`

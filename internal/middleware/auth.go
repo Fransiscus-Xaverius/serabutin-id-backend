@@ -7,16 +7,16 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/serabutin/serabutin-id-backend/internal/domain/entity"
-	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	apperror "github.com/serabutin/serabutin-id-backend/internal/domain/error"
+	"github.com/serabutin/serabutin-id-backend/internal/domain/repository"
 	"github.com/serabutin/serabutin-id-backend/pkg/apierror"
 	"github.com/serabutin/serabutin-id-backend/pkg/requestctx"
 )
 
 type AuthMiddleware struct {
-	jwtSecret     string
-	tokenRepo     repository.TokenRepository
-	userRepo      repository.UserRepository
+	jwtSecret string
+	tokenRepo repository.TokenRepository
+	userRepo  repository.UserRepository
 }
 
 func NewAuthMiddleware(jwtSecret string, tokenRepo repository.TokenRepository) *AuthMiddleware {

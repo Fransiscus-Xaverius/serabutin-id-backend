@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -145,20 +146,32 @@ func main() {
 	bookingHandler := handler.NewBookingHandler(bookingUsecase, profileUsecase, serviceUsecase)
 	bidRepo := gormrepo.NewBidRepository(db)
 	bidUsecase := usecase.NewBidUsecase(bidRepo, serviceRepo, bookingRepo, userRepo, cfg.PlatformFee)
-	bidHandler := handler.NewBidHandler(bidUsecase, profileUsecase, serviceUsecase)
+	bidHandler := handler.NewBidHandler(bidUsecase, profileUsecase, serviceUsecase, storageRepo)
 	reviewUsecase := usecase.NewReviewUsecase(reviewRepo, bookingRepo, userRepo)
 	reviewHandler := handler.NewReviewHandler(reviewUsecase, profileUsecase)
 	payoutRepo := gormrepo.NewPayoutAccountRepository(db)
 	payoutUsecase := usecase.NewPayoutUsecase(payoutRepo, userRepo, payoutCipher, cfg.PayoutEncryptionKeyID).WithRelease(usecase.PayoutRelease{
-		Payouts:     gormrepo.NewPayoutRepository(db),
-		Bookings:    bookingRepo,
-		Payments:    gormrepo.NewPaymentRepository(db),
-		Gateway:     doku.NewSubAccountClient(doku.Config{ClientID: cfg.DOKUClientID, SecretKey: cfg.DOKUSecretKey, BaseURL: cfg.DOKUBaseURL}),
-		FromAccount: cfg.DOKUSourceAccount,
-		ProfileID:   cfg.DOKUHubProfileID,
+		Payouts:  gormrepo.NewPayoutRepository(db),
+		Bookings: bookingRepo,
+		Payments: gormrepo.NewPaymentRepository(db),
+		Gateway: doku.NewSnapPayoutClient(doku.PayoutConfig{
+			ClientID:               firstNonEmpty(cfg.DOKUSnapClientID, cfg.DOKUClientID),
+			SecretKey:              firstNonEmpty(cfg.DOKUSnapClientSecret, cfg.DOKUSecretKey),
+			PrivateKey:             cfg.DOKUSnapPrivateKey,
+			BaseURL:                cfg.DOKUSnapBaseURL,
+			ChannelID:              cfg.DOKUPayoutChannelID,
+			SourceAccount:          cfg.DOKUPayoutSourceAccount,
+			SenderFirstName:        cfg.DOKUPayoutSenderFirstName,
+			SenderLastName:         cfg.DOKUPayoutSenderLastName,
+			SenderPersonalID:       cfg.DOKUPayoutSenderPersonalID,
+			SenderPersonalIDType:   cfg.DOKUPayoutSenderPersonalIDType,
+			SenderCountryCode:      cfg.DOKUPayoutSenderCountryCode,
+			CustomerNumberFallback: cfg.DOKUPayoutCustomerNumber,
+		}),
+		ProfileID: cfg.DOKUPayoutSourceAccount,
 	})
 	payoutHandler := handler.NewPayoutHandler(payoutUsecase, profileUsecase)
-	payoutReleaseHandler := handler.NewPayoutReleaseHandler(payoutUsecase, cfg.DOKUSecretKey, config.RequirePayoutRelease(cfg))
+	payoutReleaseHandler := handler.NewPayoutReleaseHandler(payoutUsecase, cfg.DOKUPayoutNotificationAgentKey, config.RequirePayoutRelease(cfg))
 	introspectUsecase := usecase.NewIntrospectUsecase(tokenService, tokenRepo, userRepo)
 	introspectHandler := handler.NewIntrospectHandler(introspectUsecase)
 	userUsecase := usecase.NewUserUsecase(userRepo)
@@ -204,6 +217,7 @@ func main() {
 	adminChatUsecase := usecase.NewAdminChatUsecase(userRepo, chatclient.NewClient(cfg.ChatBackendBaseURL, cfg.ChatServiceToken, 5*time.Second))
 	adminHandler := handler.NewAdminHandler(cancelRepo, notificationUsecase, bookingRepo, profileUsecase, serviceUsecase, auditRepo, adminUserUsecase, adminServiceUsecase, storageRepo, adminBookingUsecase)
 	adminHandler.SetAdminReviewUC(adminReviewUsecase)
+	adminHandler.SetPayoutRepo(gormrepo.NewPayoutRepository(db))
 	adminHandler.SetAdminStatsUC(adminStatsUsecase)
 	adminHandler.SetAdminChatUC(adminChatUsecase)
 	broadcastRepo := gormrepo.NewBroadcastRepository(db)
@@ -284,7 +298,7 @@ func main() {
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: []string{"*"},
 		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
-		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "Idempotency-Key"},
 	}))
 	app.Use(compress.New())
 	app.Use(middleware.RequestLogger(logger.Log))
@@ -433,11 +447,16 @@ func main() {
 	paymentPollerCtx, stopPaymentPoller := context.WithCancel(context.Background())
 	go usecase.StartPaymentExpiryWorker(paymentPollerCtx, paymentUsecase, time.Minute)
 
-	// Payout reconciliation: submitted transfers are resolved from DOKU's
-	// transactions-status API every minute, so a missed or unroutable transfer
-	// notification never leaves a Mitra's payout pending forever.
+	// Payout reconciliation: submitted transfers are resolved from the SNAP
+	// check-status API every minute, so a missed or unroutable transfer
+	// notification never leaves a Mitra's payout pending forever. The worker
+	// stays off unless the same configuration the release gate needs is set.
 	payoutReconcileCtx, stopPayoutReconcile := context.WithCancel(context.Background())
-	go usecase.StartPayoutReconcileWorker(payoutReconcileCtx, payoutUsecase, time.Minute)
+	if err := config.RequirePayoutRelease(cfg); err != nil {
+		logger.Log.Info().Err(err).Msg("payout reconcile worker not started")
+	} else {
+		go usecase.StartPayoutReconcileWorker(payoutReconcileCtx, payoutUsecase, time.Minute)
+	}
 
 	go func() {
 		if err := app.Listen(fmt.Sprintf(":%d", cfg.Port)); err != nil {
@@ -482,7 +501,6 @@ func buildPaymentGateway(cfg *config.Config) payment.Gateway {
 			ClientID:                cfg.DOKUClientID,
 			SecretKey:               cfg.DOKUSecretKey,
 			BaseURL:                 cfg.DOKUBaseURL,
-			HubAccountID:            cfg.DOKUHubAccountID,
 			NotificationPath:        cfg.DOKUNotificationPath,
 			OverrideNotificationURL: cfg.DOKUOverrideNotificationURL,
 		})
@@ -519,4 +537,15 @@ func registerLocalUploads(app *fiber.App, cfg *config.Config) {
 			return c.SendStatus(fiber.StatusNotFound)
 		},
 	}))
+}
+
+// firstNonEmpty returns the first non-blank value, so SNAP credentials can
+// fall back to the checkout pair without duplicating env vars.
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

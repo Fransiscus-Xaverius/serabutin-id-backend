@@ -20,13 +20,13 @@ import (
 	"github.com/serabutin/serabutin-id-backend/pkg/requestctx"
 )
 
-const payoutRequestBody = `{"bank_code":"BCAIDJA","bank_name":"Bank Central Asia","account_holder_name":"Siti Rahayu","account_number":"1234567890"}`
+const payoutRequestBody = `{"bank_code":"014","bank_name":"Bank Central Asia","account_holder_name":"Siti Rahayu","account_number":"1234567890","phone":"6281234567890"}`
 
 func TestPayoutHandler_Upsert_ReturnsMaskedAccount(t *testing.T) {
 	uc := &fakePayoutUsecase{account: &entity.PayoutAccount{
-		UserID: 71, BankCode: "BCAIDJA", BankName: "Bank Central Asia",
+		UserID: 71, BankCode: "014", BankName: "Bank Central Asia",
 		AccountNumberEncrypted: "enc-secret", AccountHolderNameEncrypted: "enc-holder",
-		AccountLast4: "7890", Status: entity.PayoutAccountStatusUnverified,
+		AccountLast4: "7890", PhoneLast4: "7890", Status: entity.PayoutAccountStatusUnverified,
 	}}
 	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 71)
 
@@ -63,7 +63,7 @@ func TestPayoutHandler_Upsert_RejectsNonProvider(t *testing.T) {
 
 func TestPayoutHandler_Upsert_StructValidationIs400AndSkipsUsecase(t *testing.T) {
 	cases := map[string]string{
-		"missing bank_code": `{"bank_name":"Bank Central Asia","account_holder_name":"Siti Rahayu","account_number":"1234567890"}`,
+		"missing bank_code": `{"bank_name":"Bank Central Asia","account_holder_name":"Siti Rahayu","account_number":"1234567890","phone":"6281234567890"}`,
 		"empty object":      `{}`,
 	}
 	for name, payload := range cases {
@@ -104,8 +104,8 @@ func TestPayoutHandler_Upsert_EmptyBodyIs400AndSkipsUsecase(t *testing.T) {
 }
 
 func TestPayoutHandler_Upsert_InvalidValueIs422(t *testing.T) {
-	invalidBody := `{"bank_code":"bca","bank_name":"Bank Central Asia","account_holder_name":"Siti Rahayu","account_number":"1234567890"}`
-	uc := &fakePayoutUsecase{err: apperror.NewDomainError(apperror.ErrValidation, "INVALID_PAYOUT_ACCOUNT", "bank_code must be 4 to 11 uppercase letters or digits")}
+	invalidBody := `{"bank_code":"bca","bank_name":"Bank Central Asia","account_holder_name":"Siti Rahayu","account_number":"1234567890","phone":"6281234567890"}`
+	uc := &fakePayoutUsecase{err: apperror.NewDomainError(apperror.ErrValidation, "INVALID_PAYOUT_ACCOUNT", "bank_code must be a 2 to 8 digit BI bank code")}
 	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 71)
 
 	req := httptest.NewRequest("PUT", "/api/v1/payout-account", strings.NewReader(invalidBody))
@@ -180,9 +180,9 @@ func TestPayoutHandler_Get_RejectsNonProvider(t *testing.T) {
 
 func TestPayoutHandler_Get_ReturnsMaskedAccount(t *testing.T) {
 	uc := &fakePayoutUsecase{account: &entity.PayoutAccount{
-		UserID: 71, BankCode: "BCAIDJA", BankName: "Bank Central Asia",
+		UserID: 71, BankCode: "014", BankName: "Bank Central Asia",
 		AccountNumberEncrypted: "enc-secret", AccountHolderNameEncrypted: "enc-holder",
-		AccountLast4: "7890", Status: entity.PayoutAccountStatusUnverified,
+		AccountLast4: "7890", PhoneLast4: "7890", Status: entity.PayoutAccountStatusUnverified,
 	}}
 	app := newPayoutTestApp(uc, &fakeProfileUsecase{role: "provider"}, 71)
 

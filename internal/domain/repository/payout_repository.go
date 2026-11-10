@@ -27,6 +27,10 @@ type PayoutRepository interface {
 	FindByBookingID(ctx context.Context, bookingID uint) (*entity.Payout, error)
 	// FindByPartnerReferenceNo returns the payout that carries the key sent to DOKU.
 	FindByPartnerReferenceNo(ctx context.Context, partnerReferenceNo string) (*entity.Payout, error)
+	// FindByDokuReferenceNo returns the payout that carries DOKU's own transfer
+	// reference. Refund notifications identify a payout only by transactionId,
+	// which DOKU fills with referenceNo (or, on some versions, referenceNumber).
+	FindByDokuReferenceNo(ctx context.Context, dokuReferenceNo string) (*entity.Payout, error)
 	// FindSubmitted returns up to limit submitted payouts not reconciled since
 	// reconciledBefore, for reconciliation.
 	FindSubmitted(ctx context.Context, limit int, reconciledBefore time.Time) ([]*entity.Payout, error)
@@ -43,4 +47,9 @@ type PayoutRepository interface {
 	// Update writes every column except status: references, external id,
 	// read attempts and timestamps. It never writes status; Transition does.
 	Update(ctx context.Context, payout *entity.Payout) error
+	// UpdateIfStatus writes the same columns as Update, but only while the row
+	// is still in expectedStatus. A stale copy fails instead of overwriting a
+	// newer write, such as paid_at or doku_session_id from a concurrent
+	// reconciliation. It never writes status.
+	UpdateIfStatus(ctx context.Context, payout *entity.Payout, expectedStatus string) error
 }

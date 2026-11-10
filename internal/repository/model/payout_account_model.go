@@ -9,7 +9,9 @@ type PayoutAccountModel struct {
 	BankName                   string `gorm:"size:100;not null"`
 	AccountHolderNameEncrypted string `gorm:"type:text;not null"`
 	AccountNumberEncrypted     string `gorm:"type:text;not null"`
+	PhoneEncrypted             string `gorm:"type:text"`
 	AccountLast4               string `gorm:"size:4;not null"`
+	PhoneLast4                 string `gorm:"size:4"`
 	AccountFingerprint         string `gorm:"size:64;uniqueIndex"`
 	EncryptionKeyID            string `gorm:"size:16;not null"`
 	Status                     string `gorm:"size:20;not null;index"`
